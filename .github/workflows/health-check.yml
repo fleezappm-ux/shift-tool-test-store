@@ -1,0 +1,34 @@
+name: Health check (定期見張り)
+
+# 6時間ごとに、公開サイトとGAS（サーバー）が生きているかを確認します。
+# 失敗すると、GitHubからメールで通知が届きます（Actionsの失敗通知）。
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 公開サイトが開けるか
+        run: |
+          url="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -L "$url")
+          echo "site: $url -> $code"
+          test "$code" = "200"
+      - name: GAS（サーバー）が答えるか
+        env:
+          GAS_URL: ${{ secrets.VITE_SHIFT_GAS_URL }}
+        run: |
+          if [ -z "$GAS_URL" ]; then echo "VITE_SHIFT_GAS_URL が未設定です" >&2; exit 1; fi
+          for i in 1 2 3; do
+            res=$(curl -sL --max-time 40 -H 'Content-Type: text/plain' -d '{"action":"getShiftResetEpoch"}' "$GAS_URL" || true)
+            if echo "$res" | grep -q '"success":true'; then echo "GAS ok"; exit 0; fi
+            echo "try $i failed: ${res:0:200}"; sleep 20
+          done
+          echo "GASが3回続けて答えませんでした" >&2
+          exit 1

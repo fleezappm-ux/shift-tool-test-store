@@ -1,0 +1,14 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const props={STORE_ID:'TEST-ONLY'};let lockHeld=false,role,apiKeyVerified=false;
+const ctx={console,PropertiesService:{getScriptProperties:()=>({getProperty:k=>props[k]||null,setProperty:(k,v)=>{props[k]=v}})},LockService:{getScriptLock:()=>({waitLock:()=>{lockHeld=true},hasLock:()=>lockHeld,releaseLock:()=>{lockHeld=false}})},Utilities:{getUuid:()=>crypto.randomUUID()}};
+vm.createContext(ctx);vm.runInContext(fs.readFileSync('gas/Code.gs','utf8'),ctx);
+ctx.requireShiftSession=(_token,r)=>{role=r};ctx.verifyShiftApiKey=()=>{apiKeyVerified=true};ctx.createJsonDataResponse=x=>x;ctx.createJsonResponse=(success,message)=>({success,message});ctx.appendShiftAudit=()=>{};
+assert.equal(ctx.getShiftWorkTimeMaster({}).master.items.length,3);
+const items=[{id:'night',start:'20:00',end:'08:00',nextDay:true,abbreviation:'夜勤',visible:true}];
+const result=ctx.saveShiftWorkTimeMaster({items,revision:''});assert.equal(result.success,true);assert.equal(role,'admin');assert.equal(apiKeyVerified,true);assert.equal(lockHeld,false);
+assert.equal(ctx.getShiftWorkTimeMaster({}).master.items[0].abbreviation,'夜勤');
+assert.equal(ctx.saveShiftWorkTimeMaster({items,revision:''}).success,false);
+assert.equal(ctx.saveShiftWorkTimeMaster({items:[{...items[0],nextDay:false}],revision:result.master.revision}).success,false);
+assert.equal(ctx.saveShiftWorkTimeMaster({items:[...items,items[0]],revision:result.master.revision}).success,false);
+const removed=ctx.saveShiftWorkTimeMaster({items:[],revision:result.master.revision});assert.equal(removed.success,true);assert.equal(ctx.getShiftWorkTimeMaster({}).master.items.length,0);
+console.log('PASS: GAS shared reads, save permissions, overnight validation, conflicts, duplicate prevention, delete-all');

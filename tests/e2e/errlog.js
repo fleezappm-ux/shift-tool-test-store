@@ -1,0 +1,10 @@
+const {chromium}=require('playwright');
+(async()=>{const b=await chromium.launch();const p=await b.newPage();const calls=[];
+await p.route('**/script.google.com/**',async r=>{const body=JSON.parse(r.request().postData()||'{}');calls.push(body.action);
+ let out={success:true};if(body.action==='getShiftErrorLog')out.errors=[{t:new Date().toISOString(),m:'Error: boom',w:'window',n:2,who:'藤川'}];
+ await r.fulfill({status:200,contentType:'application/json',headers:{'access-control-allow-origin':'*'},body:JSON.stringify(out)});});
+await p.addInitScript(()=>{localStorage.setItem('shift-tool:v1:/:shift_app_session',JSON.stringify({token:'tok',role:'admin',employeeName:'藤川',expiresAt:new Date(Date.now()+3e6).toISOString()}));});
+await p.goto('http://localhost:5199/');await p.waitForTimeout(1500);
+await p.evaluate(()=>{setTimeout(()=>{throw new Error('boom')},0)});await p.waitForTimeout(800);
+console.log('logged:',calls.includes('logShiftClientError'));
+await b.close();})();

@@ -1,0 +1,11 @@
+const {chromium}=require('playwright-core');
+(async()=>{const br=await chromium.launch({executablePath:'/opt/pw-browsers/chromium-1194/chrome-linux/chrome'});
+const ctx=await br.newContext({viewport:{width:390,height:844},locale:'ja-JP'});
+await ctx.addInitScript(()=>{const ns='shift-tool:v1:/:';localStorage.setItem(ns+'shift_app_session',JSON.stringify({token:'mock',role:'admin',employeeId:'df38',employeeName:'降旗',expiresAt:new Date(Date.now()+864e5*7).toISOString()}));});
+const p=await ctx.newPage();await p.route('**/version.json*',r=>r.fulfill({status:404,body:''}));
+await p.route('https://script.google.com/**',r=>r.fulfill({status:200,contentType:'application/json',headers:{'access-control-allow-origin':'*'},body:JSON.stringify({success:true})}));
+await p.goto('http://127.0.0.1:5199/',{waitUntil:'networkidle'});await p.waitForTimeout(1200);
+const b=p.getByText('最初に1回だけ、管理者用の接続キーを入れてください');console.log('banner',await b.count());
+await p.getByRole('button',{name:'接続キーを入れる'}).click();await p.waitForTimeout(800);
+console.log('on other settings',await p.getByPlaceholder('管理者用の接続キー').count(),'banner hidden',await b.count()===0);
+await br.close();})();

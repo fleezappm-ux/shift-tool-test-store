@@ -1,0 +1,56 @@
+name: Deploy shift tool to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test:worktime
+      - run: npm run test:reset
+      - name: Confirm this site has its own GAS destination
+        env:
+          VITE_SHIFT_GAS_URL: ${{ secrets.VITE_SHIFT_GAS_URL }}
+        run: |
+          if [[ ! "$VITE_SHIFT_GAS_URL" =~ ^https://script\.google\.com/macros/s/[^/]+/exec$ ]]; then
+            echo 'Set repository secret VITE_SHIFT_GAS_URL to this site’s dedicated GAS web app URL.' >&2
+            exit 1
+          fi
+      - run: npm run build
+        env:
+          VITE_SHIFT_GAS_URL: ${{ secrets.VITE_SHIFT_GAS_URL }}
+          # リポジトリ名を変えて複製しても、公開サイトが真っ白にならないように、公開先の名前から自動で決める
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

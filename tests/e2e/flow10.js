@@ -1,0 +1,23 @@
+const {chromium}=require('playwright-core');
+(async()=>{const br=await chromium.launch({executablePath:'/opt/pw-browsers/chromium-1194/chrome-linux/chrome'});
+const ctx=await br.newContext({viewport:{width:390,height:844},locale:'ja-JP'});
+const p=await ctx.newPage();const errs=[];p.on('pageerror',e=>errs.push(e.message));
+await p.route('**/version.json*',r=>r.fulfill({status:404,body:''}));
+let keyOk=false;
+await p.route('https://script.google.com/**',async r=>{let b={};try{b=JSON.parse(r.request().postData()||'{}')}catch{}
+ const H={'access-control-allow-origin':'*'};let out={success:true};
+ const one=(a,b)=>{if(a==='getShiftLoginEmployees')return {success:true,employees:[{id:'df38',name:'降旗',displayName:'降旗',active:true}]};
+  if(a==='loginShift')return {success:true,session:{token:'t',role:b.loginId==='admin'?'admin':'employee',employeeId:'df38',employeeName:'降旗',expiresAt:new Date(Date.now()+864e5).toISOString()}};
+  if(a==='checkShiftApiKey')return b.shiftApiKey==='good-key-12345'?{success:true}:{success:false,message:'認証に失敗しました'};
+  return {success:true};};
+ out=b.action==='batchShift'?{success:true,results:b.calls.map(c=>one(c.action,c))}:one(b.action,b);
+ r.fulfill({status:200,contentType:'application/json',headers:H,body:JSON.stringify(out)});});
+await p.goto('http://127.0.0.1:5199/',{waitUntil:'networkidle'});await p.waitForTimeout(800);
+await p.locator('input').first().fill('admin');await p.locator('input[type=password]').fill('pw');
+await p.locator('select').selectOption('df38');await p.getByRole('button',{name:'ログイン'}).click();await p.waitForTimeout(800);
+console.log('key step shown',await p.getByText('管理者用の接続キーを入れてください').count());
+await p.getByPlaceholder('管理者用の接続キー').fill('wrong');await p.getByRole('button',{name:'保存して始める'}).click();await p.waitForTimeout(600);
+console.log('wrong key msg',await p.getByText('接続キーが違います').count());
+await p.getByPlaceholder('管理者用の接続キー').fill('good-key-12345');await p.getByRole('button',{name:'保存して始める'}).click();await p.waitForTimeout(1200);
+console.log('logged in (no key step)',await p.getByText('管理者用の接続キーを入れてください').count()===0,'banner',await p.getByText('最初に1回だけ').count());
+console.log('errs',errs);await br.close();})();

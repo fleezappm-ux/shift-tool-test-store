@@ -1,0 +1,29 @@
+name: Check changes (CI)
+
+# 変更を取り込む前に、型チェック・テスト・ビルドを自動で確認します（壊れた変更を本番に出さないための見張り番）。
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test:worktime
+      - run: npm run test:reset
+      - name: GASコードの文法チェック
+        run: node -e "new Function(require('fs').readFileSync('gas/Code.gs','utf8'))"
+      - name: ビルド確認（ダミーの接続先）
+        run: npm run build
+        env:
+          VITE_SHIFT_GAS_URL: https://script.google.com/macros/s/DUMMY/exec

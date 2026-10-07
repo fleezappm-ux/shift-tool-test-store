@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import { DEFAULT_WORK_TIMES, displayShift, validateWorkTimes } from '../src/lib/work-time-options';
+import { calculateTimes } from '../src/lib/shift-utils';
+assert.equal(displayShift('9:00～18:00',DEFAULT_WORK_TIMES,'abbreviation'),'早番');
+assert.equal(displayShift('09:00～18:00',DEFAULT_WORK_TIMES,'both'),'09:00～18:00（早番）');
+assert.equal(displayShift('09:00～18:00',DEFAULT_WORK_TIMES,'time'),'09:00～18:00');
+assert.equal(displayShift('08:45～18:15',DEFAULT_WORK_TIMES,'abbreviation'),'08:45～18:15');
+assert.equal(displayShift('休み',DEFAULT_WORK_TIMES,'both'),'休み');
+assert.equal(validateWorkTimes([{id:'night',start:'20:00',end:'08:00',nextDay:true,abbreviation:'夜勤',visible:true}]),'');
+assert.deepEqual(calculateTimes('20:00～08:00'),{breakTime:'1:00',workTime:'11:00'});
+assert.deepEqual(calculateTimes('09:00～09:00'),{breakTime:'1:00',workTime:'23:00'});
+console.log('PASS: display modes, time normalization, legacy fallback, overnight calculation');

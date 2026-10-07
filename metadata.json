@@ -1,0 +1,6 @@
+{
+  "name": "シフト管理ツール",
+  "description": "シフト作成・希望届・お知らせを一つにまとめた、少人数向けのシフト管理ツール。",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
