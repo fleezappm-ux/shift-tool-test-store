@@ -58,3 +58,28 @@ const many=[];for(let e=0;e<50;e++)for(let d=1;d<=31;d++)many.push(row('2026-10-
 const t0=Date.now();r=ctx.saveShiftMonth({...base,shifts:many});assert.equal(r.success,true,r.message);
 g=ctx.getShifts({});assert.ok(g.shifts.length>=1550);
 console.log('PASS: sheet storage (create, read, diff-only writes, delete, validation, lock, paid leave, request mirror, 1,550 rows in '+(Date.now()-t0)+'ms)');
+// 11. 設定は「設定」シートに保存され、秘密の値はシートに出ない。人数の上限もない
+{
+  const sp=ctx.shiftProps_();
+  sp.setProperty('SHIFT_API_KEY','Secret123456');sp.setProperty('SHIFT_PIN_x','hash');sp.setProperty('SHIFT_SESSION_t','{}');
+  const staff=Array.from({length:300},(_,i)=>({id:'id'+i,name:'従業員'+i,displayName:'従業員'+i,displayOrder:i+1,active:true,aliases:[],role:''}));
+  sp.setProperty('SHIFT_EMPLOYEE_MASTER_JSON',JSON.stringify(staff));
+  const cfg=book.sheets['設定'];assert.ok(cfg,'設定シートが作られる');
+  const flat=JSON.stringify(cfg.data);
+  assert.ok(!flat.includes('Secret123456')&&!flat.includes('SHIFT_PIN_')&&!flat.includes('SHIFT_SESSION_'),'秘密の値はシートに書かない');
+  assert.equal(ctx.normalizeShiftEmployeeMaster(JSON.parse(sp.getProperty('SHIFT_EMPLOYEE_MASTER_JSON'))).length,300,'300人でも切り捨てない');
+  // 実行をまたいでも読める（メモリを捨てて読み直す）
+  ctx.SETTINGS_MEMORY_=null;assert.equal(JSON.parse(ctx.shiftProps_().getProperty('SHIFT_EMPLOYEE_MASTER_JSON')).length,300);
+  // 更新は同じ行を上書き、削除は行ごと消える
+  const rowsBefore=cfg.data.length;sp.setProperty('SHIFT_EMPLOYEE_MASTER_JSON','[]');assert.equal(book.sheets['設定'].data.length,rowsBefore);
+  ctx.SETTINGS_MEMORY_=null;assert.equal(ctx.shiftProps_().getProperty('SHIFT_EMPLOYEE_MASTER_JSON'),'[]');
+  sp.deleteProperty('SHIFT_EMPLOYEE_MASTER_JSON');ctx.SETTINGS_MEMORY_=null;assert.equal(ctx.shiftProps_().getProperty('SHIFT_EMPLOYEE_MASTER_JSON'),null);
+  // 以前のスクリプト設定にあるデータは自動で読め、保存するとシートへ移る
+  props.SHIFT_CYCLE_MASTER_JSON='{"old":1}';assert.equal(ctx.shiftProps_().getProperty('SHIFT_CYCLE_MASTER_JSON'),'{"old":1}');
+  ctx.shiftProps_().setProperty('SHIFT_CYCLE_MASTER_JSON','{"new":1}');assert.equal(props.SHIFT_CYCLE_MASTER_JSON,undefined);
+  ctx.SETTINGS_MEMORY_=null;assert.equal(ctx.shiftProps_().getProperty('SHIFT_CYCLE_MASTER_JSON'),'{"new":1}');
+  // 休み希望は1期間に500件以上でも保存できる
+  const many=Array.from({length:500},(_,i)=>({id:'q'+i,employeeId:'e1',employeeName:'藤川',date:'2026-10-20',periodStart:'2026-10-01',periodEnd:'2026-10-31',type:'休み希望',comment:'',status:'申請中',submittedAt:'t',updatedAt:'t'}));
+  ctx.writeShiftLeaveRequestStore('2026-10-01',many);assert.equal(ctx.readShiftLeaveRequestStore('2026-10-01').length,500);
+}
+console.log('PASS: settings sheet (secrets stay private, 300 staff, 500 requests, migration from old storage)');

@@ -1,7 +1,7 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const props={STORE_ID:'TEST-ONLY'};let lockHeld=false,role,apiKeyVerified=false;
 const ctx={console,PropertiesService:{getScriptProperties:()=>({getProperty:k=>props[k]||null,setProperty:(k,v)=>{props[k]=v}})},LockService:{getScriptLock:()=>({waitLock:()=>{lockHeld=true},hasLock:()=>lockHeld,releaseLock:()=>{lockHeld=false}})},Utilities:{getUuid:()=>crypto.randomUUID()}};
-vm.createContext(ctx);vm.runInContext(fs.readFileSync('gas/Code.gs','utf8'),ctx);
+vm.createContext(ctx);vm.runInContext(fs.readFileSync('gas/Code.gs','utf8'),ctx);const {makeFakeSpreadsheet,installSpreadsheetApp}=require('./helpers/fake-sheets.cjs');installSpreadsheetApp(ctx,makeFakeSpreadsheet());
 ctx.requireShiftSession=(_token,r)=>{role=r};ctx.verifyShiftApiKey=()=>{apiKeyVerified=true};ctx.createJsonDataResponse=x=>x;ctx.createJsonResponse=(success,message)=>({success,message});ctx.appendShiftAudit=()=>{};
 assert.equal(ctx.getShiftWorkTimeMaster({}).master.items.length,3);
 const items=[{id:'night',start:'20:00',end:'08:00',nextDay:true,abbreviation:'夜勤',visible:true}];

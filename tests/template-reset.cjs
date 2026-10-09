@@ -42,5 +42,5 @@ assert.ok(keys.SHIFT_SESSION_CURRENT);
 sandbox.requireShiftSession=()=>({employeeId:'operator',employeeName:'テスト',role:'admin'});
 sandbox.Utilities.newBlob=value=>({getBytes:()=>Buffer.from(value,'utf8')});
 sandbox.appendShiftAudit({sessionToken:'admin'},'テスト','test','x'.repeat(12000),'y'.repeat(12000));
-assert.ok(Buffer.byteLength(keys.SHIFT_AUDIT_LOG_JSON,'utf8')<=8000);
+assert.ok(Buffer.byteLength(sandbox.shiftProps_().getProperty('SHIFT_AUDIT_LOG_JSON'),'utf8')<=200000);
 assert.equal(held,false);console.log('PASS: reset allow-list, preview, confirmation, sheet clearing, settings removal');

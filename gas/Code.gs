@@ -46,7 +46,7 @@ function dispatchShiftAction_(data) {
     if (data.action === "getTemplateResetStatus") return getTemplateResetStatus(data);
     if (data.action === "runTemplateReset") return runTemplateReset(data);
     if (data.action === "clearTemplateShiftRemarks") return clearTemplateShiftRemarks(data);
-    if (data.action === "getShiftResetEpoch") return createJsonDataResponse({ success: true, epoch: PropertiesService.getScriptProperties().getProperty("SHIFT_RESET_EPOCH") || "" });
+    if (data.action === "getShiftResetEpoch") return createJsonDataResponse({ success: true, epoch: shiftProps_().getProperty("SHIFT_RESET_EPOCH") || "" });
     if (data.action === "loginShift") return loginShift(data);
     if (data.action === "logoutShift") return logoutShift(data);
     if (data.action === "checkShiftApiKey") { verifyShiftApiKey(data.shiftApiKey); return createJsonDataResponse({ success: true }); }
@@ -189,7 +189,7 @@ function ss_() {
   var book = null;
   try { book = SpreadsheetApp.getActiveSpreadsheet(); } catch (_) { book = null; }
   if (!book) {
-    var id = PropertiesService.getScriptProperties().getProperty("SHEET_ID");
+    var id = shiftProps_().getProperty("SHEET_ID");
     if (!id) throw new Error("保存先のスプレッドシートが見つかりません。スプレッドシートの「拡張機能 → Apps Script」からこのコードを開いてください。");
     book = SpreadsheetApp.openById(id);
   }
@@ -350,6 +350,91 @@ function removeShiftLeaveRequestFromSheet_(id) {
   } catch (error) { console.error("休み希望シートからの削除に失敗: " + error); }
 }
 
+/* ============================================================
+ * 設定の保存先（「設定」シート）
+ * 従業員・勤務時間・お知らせ・休み希望などの設定は「設定」シートに、
+ * ログインの合言葉・PIN・ログイン状態などの秘密の値は、これまで通りスクリプトの設定（外から見えない場所）に保存します。
+ * スクリプトの設定には9KBの上限がありましたが、シートに移したことで従業員の人数などの制限がなくなります。
+ * 以前の保存場所（スクリプトの設定）にデータが残っている場合は、読み込み時に自動で見つけ、次に保存したときシートへ移ります。
+ * ============================================================ */
+var SETTINGS_SHEET_NAME_ = "設定";
+var SETTINGS_CHUNK_CHARS_ = 40000;
+var SETTINGS_MAX_CHUNKS_ = 10;
+var SETTINGS_HEADERS_ = ["キー", "値（長いときは右の列に続きます）", "", "", "", "", "", "", "", "", ""];
+var SETTINGS_MEMORY_ = null;
+
+function isSecretShiftKey_(key) {
+  key = String(key);
+  if (key.indexOf("SHIFT_SESSION_") === 0 || key.indexOf("SHIFT_PIN_") === 0) return true;
+  return ["STORE_ID", "SHEET_ID", "SHIFT_API_KEY", "SHIFT_ADMIN_LOGIN_ID", "SHIFT_ADMIN_SETUP_PASSWORD", "SHIFT_ADMIN_SALT", "SHIFT_ADMIN_PASSWORD_HASH",
+    "SHIFT_EMPLOYEE_LOGIN_ID", "SHIFT_EMPLOYEE_SETUP_PASSWORD", "SHIFT_EMPLOYEE_SALT", "SHIFT_EMPLOYEE_PASSWORD_HASH", "SHIFT_INITIAL_OPERATOR_NAME",
+    "SHIFT_RESET_ALLOWED_SHEET_ID", "SHIFT_TEMPLATE_RESET_AUTH", "SHIFT_RESET_EPOCH"].indexOf(key) >= 0;
+}
+
+/** 「設定」シートの中身を、この実行の間だけメモリに読み込みます（開くのは1回だけ）。 */
+function settingsMemory_() {
+  if (SETTINGS_MEMORY_) return SETTINGS_MEMORY_;
+  var sheet = ensureSheet_(SETTINGS_SHEET_NAME_, SETTINGS_HEADERS_);
+  var last = sheet.getLastRow();
+  var map = {};
+  if (last >= 2) {
+    var values = sheet.getRange(2, 1, last - 1, 1 + SETTINGS_MAX_CHUNKS_).getValues();
+    for (var i = 0; i < values.length; i++) {
+      var key = cellText_(values[i][0]);
+      if (!key) continue;
+      var text = "";
+      for (var c = 1; c <= SETTINGS_MAX_CHUNKS_; c++) text += cellText_(values[i][c]);
+      map[key] = { row: i + 2, value: text };
+    }
+  }
+  SETTINGS_MEMORY_ = { sheet: sheet, map: map, next: last + 1 };
+  return SETTINGS_MEMORY_;
+}
+
+/** shiftProps_() の代わりに使います。同じ使い方（getProperty / setProperty など）で、保存先だけを振り分けます。 */
+function shiftProps_() {
+  var real = PropertiesService.getScriptProperties();
+  return {
+    getProperty: function(key) {
+      if (isSecretShiftKey_(key)) return real.getProperty(key);
+      var hit = settingsMemory_().map[key];
+      if (hit) return hit.value;
+      return real.getProperty(key);
+    },
+    setProperty: function(key, value) {
+      if (isSecretShiftKey_(key)) { real.setProperty(key, value); return; }
+      var text = String(value);
+      if (text.length > SETTINGS_CHUNK_CHARS_ * SETTINGS_MAX_CHUNKS_) throw new Error("保存できるデータの上限を超えました。不要なデータを整理してください。");
+      var mem = settingsMemory_();
+      var chunks = [];
+      for (var c = 0; c < SETTINGS_MAX_CHUNKS_; c++) chunks.push(text.slice(c * SETTINGS_CHUNK_CHARS_, (c + 1) * SETTINGS_CHUNK_CHARS_));
+      var hit = mem.map[key];
+      var row = hit ? hit.row : mem.next++;
+      mem.sheet.getRange(row, 1, 1, 1 + SETTINGS_MAX_CHUNKS_).setValues([[key].concat(chunks)]);
+      mem.map[key] = { row: row, value: text };
+      // 以前の保存場所に残っていれば消す（二重に持たない）。
+      if (real.getProperty(key) !== null && real.getProperty(key) !== undefined) real.deleteProperty(key);
+    },
+    setProperties: function(obj) { var self = this; Object.keys(obj || {}).forEach(function(k) { self.setProperty(k, obj[k]); }); },
+    deleteProperty: function(key) {
+      if (isSecretShiftKey_(key)) { real.deleteProperty(key); return; }
+      var mem = settingsMemory_();
+      var hit = mem.map[key];
+      if (hit) {
+        mem.sheet.deleteRow(hit.row);
+        SETTINGS_MEMORY_ = null; // 行番号がずれるので、次回読み直す
+      }
+      real.deleteProperty(key);
+    },
+    getProperties: function() {
+      var out = real.getProperties();
+      var map = settingsMemory_().map;
+      Object.keys(map).forEach(function(k) { out[k] = map[k].value; });
+      return out;
+    }
+  };
+}
+
 
 
 
@@ -374,7 +459,7 @@ function removeShiftLeaveRequestFromSheet_(id) {
 
 /** 現在の店舗IDを返します。多店舗化までは固定のスクリプトプロパティを使います。 */
 function getStoreId() {
-  return PropertiesService.getScriptProperties().getProperty("STORE_ID") || "STORE-NEW";
+  return shiftProps_().getProperty("STORE_ID") || "STORE-NEW";
 }
 
 
@@ -407,7 +492,7 @@ function shiftBoardVisibilityLabelToValue(label) {
 /** 休み希望の掲示板公開設定を店舗設定DBから取得します。DB未設定時は安全側でimmediateを返します。 */
 /** 休み希望の公開設定の値（immediate / after_approval / private）を返します。未設定なら全員公開です。 */
 function readShiftBoardVisibilityValue() {
-  var stored = PropertiesService.getScriptProperties().getProperty("SHIFT_BOARD_VISIBILITY_FALLBACK_" + getStoreId());
+  var stored = shiftProps_().getProperty("SHIFT_BOARD_VISIBILITY_FALLBACK_" + getStoreId());
   return SHIFT_BOARD_VISIBILITY_VALUES.indexOf(stored) >= 0 ? stored : "immediate";
 }
 
@@ -430,7 +515,7 @@ function saveShiftStoreBoardVisibility(data) {
     verifyShiftApiKey(data.shiftApiKey);
     var visibility = sanitizeText(data.visibility, 30);
     if (SHIFT_BOARD_VISIBILITY_VALUES.indexOf(visibility) === -1) throw new Error("公開設定の値が正しくありません。");
-    PropertiesService.getScriptProperties().setProperty("SHIFT_BOARD_VISIBILITY_FALLBACK_" + getStoreId(), visibility);
+    shiftProps_().setProperty("SHIFT_BOARD_VISIBILITY_FALLBACK_" + getStoreId(), visibility);
     appendShiftAudit(data, "休み希望掲示板公開設定変更", getStoreId(), null, { visibility: visibility });
     return createJsonDataResponse({ success: true, visibility: visibility });
   } catch (error) {
@@ -449,7 +534,7 @@ function saveShiftStoreBoardVisibility(data) {
 
 /** シフト管理ツールからのリクエストを検証します（Googleログインの代わりに合言葉で確認）。 */
 function verifyShiftApiKey(providedKey) {
-  var expected = PropertiesService.getScriptProperties().getProperty("SHIFT_API_KEY");
+  var expected = shiftProps_().getProperty("SHIFT_API_KEY");
   if (!expected || !providedKey || providedKey !== expected) {
     throw new Error("シフト管理ツールの認証に失敗しました。");
   }
@@ -461,7 +546,7 @@ function verifyShiftApiKey(providedKey) {
  * 共通ヘルパー：保存の排他制御・サイズ確認
  * ------------------------------------------------------------ */
 var SHIFT_LOCK_HELD_ = false;
-var SHIFT_PROPERTY_MAX_BYTES_ = 8500;
+var SHIFT_PROPERTY_MAX_BYTES_ = 300000;
 
 /** スクリプトロックを包み、同じ実行内で二重に取得しようとしても止まらないようにします。 */
 function shiftLockHandle_() {
@@ -506,7 +591,7 @@ function assertShiftPropertySize_(value) {
 /** 1つの設定値が上限を超えないことを確認してから保存します。 */
 function safeSetProperty_(key, value) {
   assertShiftPropertySize_(value);
-  PropertiesService.getScriptProperties().setProperty(key, value);
+  shiftProps_().setProperty(key, value);
 }
 
 function formatShiftDateParts_(year, monthIndex, day) {
@@ -524,7 +609,7 @@ function shiftDateFromToday_(monthOffset) {
 function readShiftCalendarSettings_() {
   var settings = { startDay: 1, endDay: 0 };
   try {
-    var raw = PropertiesService.getScriptProperties().getProperty("SHIFT_CALENDAR_PERIOD_JSON");
+    var raw = shiftProps_().getProperty("SHIFT_CALENDAR_PERIOD_JSON");
     var parsed = raw ? JSON.parse(raw) : null;
     if (parsed && Number(parsed.startDay) >= 1 && Number(parsed.startDay) <= 28) settings = { startDay: Number(parsed.startDay), endDay: Number(parsed.endDay) || 0 };
   } catch (_) {}
@@ -564,7 +649,7 @@ function getShiftPeriodStatus(data) {
   try {
     var periodStart = sanitizeDateValue(data.periodStart);
     if (!periodStart) throw new Error("対象期間が正しくありません。");
-    var raw = PropertiesService.getScriptProperties().getProperty("SHIFT_PERIOD_STATUSES_JSON") || "{}";
+    var raw = shiftProps_().getProperty("SHIFT_PERIOD_STATUSES_JSON") || "{}";
     var statuses = JSON.parse(raw);
     // 新しい店舗では全期間を未確定で開始します。
     var locked = Object.prototype.hasOwnProperty.call(statuses, periodStart)
@@ -586,7 +671,7 @@ function saveShiftPeriodStatus(data) {
     if (!periodStart || !periodEnd || periodStart > periodEnd) throw new Error("対象期間が正しくありません。");
     var locked = Boolean(data.locked);
     return withShiftLock_(function() {
-      var p = PropertiesService.getScriptProperties();
+      var p = shiftProps_();
       var statuses = {};
       try { statuses = JSON.parse(p.getProperty("SHIFT_PERIOD_STATUSES_JSON") || "{}"); }
       catch (_) { throw new Error("確定状態のデータを読み込めませんでした。管理者に連絡してください。"); }
@@ -618,7 +703,7 @@ function saveShiftPeriodStatus(data) {
  * 台帳は期間の開始日をキーにします。旧形式（開始日|終了日）のキーも解除時に読み取ります。
  */
 function reconcileShiftPaidLeaveForPeriod(periodStart, periodEnd, locked) {
-  var p = PropertiesService.getScriptProperties();
+  var p = shiftProps_();
   var balances = {};
   var ledger = {};
   try { balances = JSON.parse(p.getProperty("SHIFT_PAID_LEAVE_BALANCES_JSON") || "{}"); } catch (_) { balances = {}; }
@@ -683,7 +768,7 @@ function shiftAuthHash(value, salt) {
 
 /** 導入の自己診断：GASエディタでこの関数を実行すると、設定の抜けとスプレッドシートへのつながりを「実行ログ」に一覧で出します。値（キー・パスワード）は表示しません。何度実行しても安全です。 */
 function checkShiftSetup() {
-  var p = PropertiesService.getScriptProperties();
+  var p = shiftProps_();
   var lines = [];
   var ng = 0;
   function mark(ok, label, note) { if (!ok) ng++; lines.push((ok ? "OK   " : "NG   ") + label + (note ? "  … " + note : "")); }
@@ -694,20 +779,24 @@ function checkShiftSetup() {
   if (keyValue) mark(keyValue.length >= 10 && !/^\d+$/.test(keyValue) && !/^[a-zA-Z]+$/.test(keyValue), "SHIFT_API_KEY（強さ）", "10文字以上で、英字と数字をまぜてください（短い・数字だけ・英字だけは、推測されやすいためNG）");
   mark(!!p.getProperty("SHIFT_ADMIN_PASSWORD_HASH"), "管理者ログイン", p.getProperty("SHIFT_ADMIN_PASSWORD_HASH") ? "" : "configureShiftAdmin() を実行してください");
   mark(!!p.getProperty("SHIFT_EMPLOYEE_PASSWORD_HASH"), "従業員ログイン", p.getProperty("SHIFT_EMPLOYEE_PASSWORD_HASH") ? "" : "configureShiftEmployeeLogin() を実行してください");
-  mark(!!p.getProperty("SHIFT_EMPLOYEE_MASTER_JSON"), "最初の操作員", p.getProperty("SHIFT_EMPLOYEE_MASTER_JSON") ? "" : "initializeShiftOperator() を実行してください");
+  var sheetOk = false;
   try {
-    shiftSheet_(); requestSheet_();
-    mark(true, "スプレッドシート（シフト・休み希望のシート）にアクセスできる");
+    shiftSheet_(); requestSheet_(); settingsMemory_();
+    sheetOk = true;
+    mark(true, "スプレッドシート（シフト・休み希望・設定のシート）にアクセスできる");
   } catch (e) {
-    mark(false, "スプレッドシート（シフト・休み希望のシート）にアクセスできる", String(e && e.message || e));
+    mark(false, "スプレッドシート（シフト・休み希望・設定のシート）にアクセスできる", String(e && e.message || e));
   }
+  var hasOperator = false;
+  if (sheetOk) { try { hasOperator = !!p.getProperty("SHIFT_EMPLOYEE_MASTER_JSON"); } catch (_) {} }
+  mark(hasOperator, "最初の操作員", hasOperator ? "" : (sheetOk ? "initializeShiftOperator() を実行してください" : "スプレッドシートにつながってから確認します"));
   var summary = (ng === 0 ? "【すべてOK】導入の設定は整っています。" : "【要確認 " + ng + "件】NGの行を直して、もう一度実行してください。") + "\n" + lines.join("\n");
   Logger.log(summary);
   return summary;
 }
 
 function configureShiftAdmin() {
-  var p = PropertiesService.getScriptProperties();
+  var p = shiftProps_();
   var loginId = p.getProperty("SHIFT_ADMIN_LOGIN_ID");
   var password = p.getProperty("SHIFT_ADMIN_SETUP_PASSWORD");
   if (!loginId || !password) throw new Error("SHIFT_ADMIN_LOGIN_ID と SHIFT_ADMIN_SETUP_PASSWORD を設定してください。");
@@ -728,7 +817,7 @@ function shiftSessionPropertyKey(token) {
 function createShiftSession(role, employeeName, employeeId) {
   // 全セッションを1個のJSONへ追記する方式は、同時ログイン時の競合と
   // Script Propertiesの1値サイズ上限に弱いため、1セッション=1プロパティで保存します。
-  var p = PropertiesService.getScriptProperties();
+  var p = shiftProps_();
   // 期限切れトークンは再アクセスされないこともあるため、ログイン時に掃除する。
   var properties = p.getProperties();
   var now = Date.now();
@@ -760,7 +849,7 @@ function createShiftSession(role, employeeName, employeeId) {
 function requireShiftSession(token, role) {
   var safeToken = sanitizeText(token, 200);
   if (!safeToken) throw new Error("ログインの有効期限が切れました。もう一度ログインしてください。");
-  var p = PropertiesService.getScriptProperties();
+  var p = shiftProps_();
   var key = shiftSessionPropertyKey(safeToken);
   var raw = p.getProperty(key);
   var session = null;
@@ -779,23 +868,23 @@ function appendShiftAudit(data, action, target, beforeValue, afterValue) {
   try {
     var session = requireShiftSession(data.sessionToken);
     withShiftLock_(function() {
-      var p = PropertiesService.getScriptProperties();
+      var p = shiftProps_();
       var items = [];
       try { items = JSON.parse(p.getProperty("SHIFT_AUDIT_LOG_JSON") || "[]"); } catch (_) { items = []; }
       items.push({ id: Utilities.getUuid(), at: new Date().toISOString(), operatorId: session.employeeId || "", operatorName: session.employeeName || "", role: session.role, action: action, target: sanitizeText(target, 200), before: beforeValue || null, after: afterValue || null });
-      if (items.length > 500) items = items.slice(items.length - 500);
-      // Script Propertiesの1値9KB上限に収まるよう古い記録から整理する。
+      if (items.length > 1000) items = items.slice(items.length - 1000);
+      // 保存サイズが大きくなりすぎないよう古い記録から整理する。
       var json = JSON.stringify(items);
-      while (items.length > 1 && shiftByteLength_(json) > 8000) {
+      while (items.length > 1 && shiftByteLength_(json) > 200000) {
         items.shift();
         json = JSON.stringify(items);
       }
-      if (shiftByteLength_(json) > 8000) {
+      if (shiftByteLength_(json) > 200000) {
         items[0].before = "サイズ上限により省略";
         items[0].after = "サイズ上限により省略";
         json = JSON.stringify(items);
       }
-      if (shiftByteLength_(json) > 8000) throw new Error("監査ログのサイズが上限を超えました。");
+      if (shiftByteLength_(json) > 200000) throw new Error("監査ログのサイズが上限を超えました。");
       safeSetProperty_("SHIFT_AUDIT_LOG_JSON", json);
     });
   } catch (error) { console.error("監査ログ保存失敗: " + error); }
@@ -804,7 +893,7 @@ function appendShiftAudit(data, action, target, beforeValue, afterValue) {
 
 
 function readShiftEmployeeMaster() {
-  var raw = PropertiesService.getScriptProperties().getProperty("SHIFT_EMPLOYEE_MASTER_JSON");
+  var raw = shiftProps_().getProperty("SHIFT_EMPLOYEE_MASTER_JSON");
   try { return raw ? JSON.parse(raw) : []; } catch (_) { return []; }
 }
 
@@ -812,7 +901,7 @@ function readShiftEmployeeMaster() {
 
 function getShiftLoginEmployees() {
   try {
-    var pinProps = PropertiesService.getScriptProperties().getProperties();
+    var pinProps = shiftProps_().getProperties();
     var employees = normalizeShiftEmployeeMaster(readShiftEmployeeMaster()).filter(function(item) { var label = item.displayName || item.name || ""; return item.active && !/^従業員[A-EＡ-Ｅ]$/.test(label); }).map(function(item) { return { id: item.id, name: item.name, displayName: item.displayName, active: item.active, hasPin: !!pinProps[shiftPinPropertyKey_(item.id)] }; });
     return createJsonDataResponse({ success: true, employees: employees });
   } catch (error) { return createJsonResponse(false, "操作員一覧を取得できませんでした。"); }
@@ -822,9 +911,8 @@ function getShiftLoginEmployees() {
 
 function normalizeShiftEmployeeMaster(items, rolesOverride) {
   var roles = Array.isArray(rolesOverride) ? rolesOverride : readShiftRoleMaster();
-  // 【重要メモ】従業員は最大50人まで。さらに従業員マスターは1つのScript Property（上限9KB）に保存しており、
-  // 約45人前後で容量上限に近づく恐れがある。大規模店舗へ広げる際は分割保存か別保存先へ移行すること。
-  return (Array.isArray(items) ? items : []).slice(0, 50).map(function(item, index) {
+  // 従業員マスターは「設定」シートに保存します（人数の上限は実質ありません）。
+  return (Array.isArray(items) ? items : []).map(function(item, index) {
     var selected = roles.filter(function(role) { return role.id === item.roleId || role.name === item.role; })[0];
     return {
       id: sanitizeText(item.id, 100).trim() || Utilities.getUuid(),
@@ -839,7 +927,7 @@ function normalizeShiftEmployeeMaster(items, rolesOverride) {
 }
 
 function readShiftRoleMaster() {
-  var raw = PropertiesService.getScriptProperties().getProperty("SHIFT_ROLE_MASTER_JSON");
+  var raw = shiftProps_().getProperty("SHIFT_ROLE_MASTER_JSON");
   try { if (raw) return JSON.parse(raw); } catch (_) {}
   return [{ id: "manager", name: "店長" }, { id: "clerk", name: "事務" }, { id: "staff", name: "スタッフ" }];
 }
@@ -873,7 +961,7 @@ function saveShiftRoleMaster(data) {
       var rolesJson = JSON.stringify(roles), employeesJson = JSON.stringify(employees);
       assertShiftPropertySize_(rolesJson);
       assertShiftPropertySize_(employeesJson);
-      var p = PropertiesService.getScriptProperties();
+      var p = shiftProps_();
       p.setProperty("SHIFT_ROLE_MASTER_JSON", rolesJson);
       p.setProperty("SHIFT_EMPLOYEE_MASTER_JSON", employeesJson);
       appendShiftAudit(data, "役職マスタ保存", "SHIFT_ROLE_MASTER", before, roles);
@@ -885,7 +973,7 @@ function saveShiftRoleMaster(data) {
 function getShiftHomeLayout(data) {
   try {
     requireShiftSession(data.sessionToken);
-    var raw = PropertiesService.getScriptProperties().getProperty("SHIFT_HOME_LAYOUT_JSON");
+    var raw = shiftProps_().getProperty("SHIFT_HOME_LAYOUT_JSON");
     return createJsonDataResponse({ success: true, layout: raw ? JSON.parse(raw) : { visible: true, columns: [["manager", "clerk"], ["staff"]] } });
   } catch (error) { return createJsonResponse(false, error.message || "ホーム表示設定を取得できませんでした。"); }
 }
@@ -909,7 +997,7 @@ function saveShiftHomeLayout(data) {
 }
 
 function readShiftAdminNotices() {
-  var p = PropertiesService.getScriptProperties();
+  var p = shiftProps_();
   var ids = JSON.parse(p.getProperty("SHIFT_ADMIN_NOTICE_IDS") || "[]");
   return ids.map(function(id) {
     try { return JSON.parse(p.getProperty("SHIFT_ADMIN_NOTICE_" + id) || "null"); } catch (_) { return null; }
@@ -928,7 +1016,7 @@ function getShiftAdminNotices(data) {
 function getShiftAdminNoticeVisibility(data) {
   try {
     requireShiftSession(data.sessionToken);
-    return createJsonDataResponse({ success: true, visibility: PropertiesService.getScriptProperties().getProperty("SHIFT_ADMIN_NOTICE_VISIBILITY") || "all" });
+    return createJsonDataResponse({ success: true, visibility: shiftProps_().getProperty("SHIFT_ADMIN_NOTICE_VISIBILITY") || "all" });
   } catch (error) { return createJsonResponse(false, error.message || "公開設定を取得できませんでした。"); }
 }
 function saveShiftAdminNoticeVisibility(data) {
@@ -936,7 +1024,7 @@ function saveShiftAdminNoticeVisibility(data) {
     requireShiftSession(data.sessionToken, "admin"); verifyShiftApiKey(data.shiftApiKey);
     if (data.visibility !== "all" && data.visibility !== "selected") throw new Error("公開範囲を選んでください。");
     return withShiftLock_(function() {
-      PropertiesService.getScriptProperties().setProperty("SHIFT_ADMIN_NOTICE_VISIBILITY", data.visibility);
+      shiftProps_().setProperty("SHIFT_ADMIN_NOTICE_VISIBILITY", data.visibility);
       return createJsonDataResponse({ success: true, visibility: data.visibility });
     });
   } catch (error) { return createJsonResponse(false, error.message || "公開設定を保存できませんでした。"); }
@@ -953,7 +1041,7 @@ function saveShiftAdminNotice(data) {
     if (visibility === "selected" && !ids.length) throw new Error("対象の従業員を選んでください。");
     var lock = shiftLockHandle_(); lock.waitLock(10000);
     try {
-      var p = PropertiesService.getScriptProperties();
+      var p = shiftProps_();
       var index = JSON.parse(p.getProperty("SHIFT_ADMIN_NOTICE_IDS") || "[]");
       if (index.length >= 100) throw new Error("お知らせは100件までです。不要なものを削除してください。");
       var id = Utilities.getUuid();
@@ -973,7 +1061,7 @@ function deleteShiftAdminNotice(data) {
     var id = sanitizeText(data.id, 100);
     var lock = shiftLockHandle_(); lock.waitLock(10000);
     try {
-      var p = PropertiesService.getScriptProperties();
+      var p = shiftProps_();
       var index = JSON.parse(p.getProperty("SHIFT_ADMIN_NOTICE_IDS") || "[]");
       if (index.indexOf(id) === -1) throw new Error("対象のお知らせがありません。");
       safeSetProperty_("SHIFT_ADMIN_NOTICE_IDS", JSON.stringify(index.filter(function(item) { return item !== id; })));
@@ -991,7 +1079,7 @@ function deleteShiftAdminNotice(data) {
 function readShiftStoreSettings_() {
   var settings = { storeName: "", showStoreNameOnHome: false };
   try {
-    var raw = PropertiesService.getScriptProperties().getProperty("SHIFT_STORE_SETTINGS_JSON");
+    var raw = shiftProps_().getProperty("SHIFT_STORE_SETTINGS_JSON");
     var parsed = raw ? JSON.parse(raw) : null;
     if (parsed && typeof parsed === "object") {
       settings.storeName = String(parsed.storeName || "").slice(0, 60);
@@ -1027,7 +1115,7 @@ function saveShiftStoreSettings(data) {
 
 /** 従業員マスタの「版」。他の端末が先に保存していたら、古い画面からの上書きを止めるために使います。 */
 function shiftEmployeeMasterRevision_() {
-  var raw = PropertiesService.getScriptProperties().getProperty("SHIFT_EMPLOYEE_MASTER_JSON") || "";
+  var raw = shiftProps_().getProperty("SHIFT_EMPLOYEE_MASTER_JSON") || "";
   var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, raw, Utilities.Charset.UTF_8);
   return bytes.map(function(b) { var v = (b < 0 ? b + 256 : b).toString(16); return v.length < 2 ? "0" + v : v; }).join("");
 }
@@ -1071,7 +1159,7 @@ function saveShiftEmployeeMaster(data) {
 function getShiftCycleMaster(data) {
   try {
     requireShiftSession(data.sessionToken);
-    var raw = PropertiesService.getScriptProperties().getProperty("SHIFT_CYCLE_MASTER_JSON");
+    var raw = shiftProps_().getProperty("SHIFT_CYCLE_MASTER_JSON");
     var master = null;
     try { master = raw ? JSON.parse(raw) : null; } catch (_) { master = null; }
     return createJsonDataResponse({ success: true, master: master });
@@ -1114,7 +1202,7 @@ function saveShiftCycleMaster(data) {
       if (validIds[cycleType] && anchorDate) safe.assignments[sanitizeText(employeeId, 100)] = { cycleType: Number(cycleType), anchorDate: anchorDate };
     });
     return withShiftLock_(function() {
-      var beforeRaw = PropertiesService.getScriptProperties().getProperty("SHIFT_CYCLE_MASTER_JSON") || "";
+      var beforeRaw = shiftProps_().getProperty("SHIFT_CYCLE_MASTER_JSON") || "";
       safeSetProperty_("SHIFT_CYCLE_MASTER_JSON", JSON.stringify(safe));
       appendShiftAudit(data, "勤務パターンマスター保存", "SHIFT_CYCLE_MASTER", beforeRaw, safe);
       return createJsonDataResponse({ success: true, master: safe });
@@ -1196,7 +1284,7 @@ function shiftPinHash_(operatorId, pin, salt) { return shiftAuthHash(String(oper
 
 /** PINを確かめます。まだ決めていない人は、newPin で初回登録します。失敗すると例外。 */
 function verifyOrRegisterShiftPin_(operatorId, pin, newPin) {
-  var p = PropertiesService.getScriptProperties();
+  var p = shiftProps_();
   var key = shiftPinPropertyKey_(operatorId);
   var raw = p.getProperty(key);
   if (raw) {
@@ -1228,7 +1316,7 @@ function resetShiftEmployeePin(data) {
     var master = normalizeShiftEmployeeMaster(readShiftEmployeeMaster());
     var target = master.filter(function(item) { return item.id === employeeId; })[0];
     if (!target) throw new Error("従業員マスターに見つかりません。");
-    PropertiesService.getScriptProperties().deleteProperty(shiftPinPropertyKey_(employeeId));
+    shiftProps_().deleteProperty(shiftPinPropertyKey_(employeeId));
     var cache = getShiftLoginCache_();
     if (cache) cache.remove(shiftPinThrottleKey_(employeeId));
     appendShiftAudit(data, "PINリセット", "従業員:" + (target.displayName || target.name), null, null);
@@ -1238,7 +1326,7 @@ function resetShiftEmployeePin(data) {
 
 function loginShift(data) {
   try {
-    var p = PropertiesService.getScriptProperties();
+    var p = shiftProps_();
     var loginId = sanitizeText(data.loginId, 100).trim();
     var password = sanitizeText(data.password, 200);
     var operatorId = sanitizeText(data.employeeId, 100).trim();
@@ -1287,7 +1375,7 @@ function loginShift(data) {
 function logoutShift(data) {
   try {
     var token = sanitizeText(data.sessionToken, 200);
-    if (token) PropertiesService.getScriptProperties().deleteProperty(shiftSessionPropertyKey(token));
+    if (token) shiftProps_().deleteProperty(shiftSessionPropertyKey(token));
     return createJsonDataResponse({ success: true });
   } catch (error) { return createJsonResponse(false, error.message || "ログアウトできませんでした。"); }
 }
@@ -1295,7 +1383,7 @@ function logoutShift(data) {
 
 
 function configureShiftEmployeeLogin() {
-  var p = PropertiesService.getScriptProperties();
+  var p = shiftProps_();
   var loginId = p.getProperty("SHIFT_EMPLOYEE_LOGIN_ID");
   var password = p.getProperty("SHIFT_EMPLOYEE_SETUP_PASSWORD");
   if (!loginId || !password) throw new Error("SHIFT_EMPLOYEE_LOGIN_ID と SHIFT_EMPLOYEE_SETUP_PASSWORD を設定してください。");
@@ -1313,7 +1401,7 @@ function getShiftPaidLeaveBalance(data) {
     var employeeId = sanitizeText(data.employeeId, 100).trim();
     if (!employeeId || (session.role !== "admin" && session.employeeId !== employeeId)) throw new Error("本人の有給情報だけを表示できます。");
     var values = {};
-    try { values = JSON.parse(PropertiesService.getScriptProperties().getProperty("SHIFT_PAID_LEAVE_BALANCES_JSON") || "{}"); } catch (_) { values = {}; }
+    try { values = JSON.parse(shiftProps_().getProperty("SHIFT_PAID_LEAVE_BALANCES_JSON") || "{}"); } catch (_) { values = {}; }
     return createJsonDataResponse({ success: true, balance: values[employeeId] || null });
   } catch (error) { return createJsonResponse(false, error.message || "有給情報を取得できませんでした。"); }
 }
@@ -1321,14 +1409,14 @@ function getShiftPaidLeaveBalance(data) {
 
 
 function getShiftAutoDraftSettings(data) {
-  try { requireShiftSession(data.sessionToken, "admin"); var raw = PropertiesService.getScriptProperties().getProperty("SHIFT_AUTO_DRAFT_SETTINGS_JSON"); return createJsonDataResponse({ success: true, settings: raw ? JSON.parse(raw) : { enabled: false, started: false, horizonMonths: 3 } }); }
+  try { requireShiftSession(data.sessionToken, "admin"); var raw = shiftProps_().getProperty("SHIFT_AUTO_DRAFT_SETTINGS_JSON"); return createJsonDataResponse({ success: true, settings: raw ? JSON.parse(raw) : { enabled: false, started: false, horizonMonths: 3 } }); }
   catch (error) { return createJsonResponse(false, error.message || "自動作成設定を取得できませんでした。"); }
 }
 
 
 
 function saveShiftAutoDraftSettings(data) {
-  try { requireShiftSession(data.sessionToken, "admin"); verifyShiftApiKey(data.shiftApiKey); var input = data.settings || {}; var safe = { enabled: Boolean(input.enabled), started: Boolean(input.enabled && input.started), horizonMonths: 3, lastRunAt: input.lastRunAt ? sanitizeText(input.lastRunAt, 50) : "" }; return withShiftLock_(function() { PropertiesService.getScriptProperties().setProperty("SHIFT_AUTO_DRAFT_SETTINGS_JSON", JSON.stringify(safe)); appendShiftAudit(data, "シフト案自動作成設定", "SHIFT_AUTO_DRAFT_SETTINGS", null, safe); return createJsonDataResponse({ success: true, settings: safe }); }); }
+  try { requireShiftSession(data.sessionToken, "admin"); verifyShiftApiKey(data.shiftApiKey); var input = data.settings || {}; var safe = { enabled: Boolean(input.enabled), started: Boolean(input.enabled && input.started), horizonMonths: 3, lastRunAt: input.lastRunAt ? sanitizeText(input.lastRunAt, 50) : "" }; return withShiftLock_(function() { shiftProps_().setProperty("SHIFT_AUTO_DRAFT_SETTINGS_JSON", JSON.stringify(safe)); appendShiftAudit(data, "シフト案自動作成設定", "SHIFT_AUTO_DRAFT_SETTINGS", null, safe); return createJsonDataResponse({ success: true, settings: safe }); }); }
   catch (error) { return createJsonResponse(false, error.message || "自動作成設定を保存できませんでした。"); }
 }
 
@@ -1343,7 +1431,7 @@ function saveShiftPaidLeaveBalance(data) {
     var employeeId = sanitizeText(input.employeeId, 100).trim();
     if (!employeeId || (session.role !== "admin" && session.employeeId !== employeeId)) throw new Error("本人の有給情報だけを変更できます。");
     var values = {};
-    var p = PropertiesService.getScriptProperties();
+    var p = shiftProps_();
     try { values = JSON.parse(p.getProperty("SHIFT_PAID_LEAVE_BALANCES_JSON") || "{}"); } catch (_) { values = {}; }
     var safe = { employeeId: employeeId, enabled: Boolean(input.enabled), remainingDays: Math.max(0, Number(input.remainingDays) || 0), renewalDate: sanitizeDateValue(input.renewalDate) || "", grantDays: Math.max(0, Number(input.grantDays) || 0), updatedAt: new Date().toISOString() };
     var before = values[employeeId] || null;
@@ -1371,7 +1459,7 @@ function getShiftLeaveRequestPropertyKey(periodStart) {
 
 
 function readShiftLeaveRequestStore(periodStart) {
-  var raw = PropertiesService.getScriptProperties().getProperty(getShiftLeaveRequestPropertyKey(periodStart));
+  var raw = shiftProps_().getProperty(getShiftLeaveRequestPropertyKey(periodStart));
   if (!raw) return [];
   try {
     var parsed = JSON.parse(raw);
@@ -1390,13 +1478,13 @@ function writeShiftLeaveRequestStore(periodStart, requests) {
 
 
 /**
- * 1期間分の希望をScript Property（1値9KB上限）へ保存する共通処理。
- * 8000バイトを超えそうなときだけ「取消」済みの希望を整理し、それでも8500バイトを超える場合は保存しません。
+ * 1期間分の希望を「設定」シートへ保存する共通処理。
+ * 容量が大きくなりすぎたときだけ「取消」済みの希望を整理し、それでも上限を超える場合は保存しません。
  */
 function writeShiftLeaveRequestStoreByKey_(key, requests) {
-  if (requests.length > 100) throw new Error("この期間の希望件数が上限を超えています。");
+  if (requests.length > 3000) throw new Error("この期間の希望件数が上限を超えています。");
   var json = JSON.stringify(requests);
-  if (shiftByteLength_(json) > 8000) {
+  if (shiftByteLength_(json) > 200000) {
     var trimmed = requests.filter(function(item) { return item.status !== "取消"; });
     if (trimmed.length !== requests.length) {
       requests.length = 0;
@@ -1404,8 +1492,8 @@ function writeShiftLeaveRequestStoreByKey_(key, requests) {
       json = JSON.stringify(requests);
     }
   }
-  if (shiftByteLength_(json) > 8500) throw new Error("この期間の希望が上限に達しました。管理者に連絡し、対応済みの希望を整理してください。");
-  PropertiesService.getScriptProperties().setProperty(key, json);
+  if (shiftByteLength_(json) > 300000) throw new Error("この期間の希望が上限に達しました。管理者に連絡し、対応済みの希望を整理してください。");
+  shiftProps_().setProperty(key, json);
 }
 
 
@@ -1439,7 +1527,7 @@ function getShiftLeaveRequests(data) {
     }
     var viewer = requireShiftSession(data.sessionToken);
     if (viewer.role !== "admin") {
-      var correctionVisibility = PropertiesService.getScriptProperties().getProperty("SHIFT_CORRECTION_VISIBILITY_" + getStoreId()) || "all";
+      var correctionVisibility = shiftProps_().getProperty("SHIFT_CORRECTION_VISIBILITY_" + getStoreId()) || "all";
       var boardVisibility = "immediate";
       try { boardVisibility = readShiftBoardVisibilityValue(); } catch (visibilityError) { console.error(visibilityError); }
       requests = requests.filter(function(item) {
@@ -1543,7 +1631,7 @@ function saveShiftLeaveRequest(data) {
 
 
 function findShiftLeaveRequestStore(id) {
-  var properties = PropertiesService.getScriptProperties().getProperties();
+  var properties = shiftProps_().getProperties();
   var keys = Object.keys(properties).filter(function(key) { return key.indexOf("SHIFT_LEAVE_REQUESTS_") === 0; });
   for (var i = 0; i < keys.length; i++) {
     var items;
@@ -1652,7 +1740,7 @@ function updateShiftLeaveRequestWorkTime(data) {
 /** 店舗ごとの休診・当番日ルール。本人認証導入まではシフト画面から共有編集できる試作運用です。 */
 function getShiftSpecialDayRules() {
   try {
-    var props = PropertiesService.getScriptProperties();
+    var props = shiftProps_();
     var raw = props.getProperty("SHIFT_SPECIAL_DAY_RULES_JSON");
     var rules = raw ? JSON.parse(raw) : [];
     var migrated = props.getProperty("SHIFT_BAND_V3_MIGRATED") === "1";
@@ -1695,7 +1783,7 @@ function saveShiftSpecialDayRules(data) {
       return { id: sanitizeText(rule.id, 100), name: sanitizeText(rule.name, 50), color: colors.indexOf(rule.color) >= 0 ? rule.color : "gray", behavior: "information", enabled: rule.enabled !== false, mode: ["recurring", "yearly", "monthly"].indexOf(rule.mode) >= 0 ? rule.mode : "annual", weekday: Math.max(0, Math.min(6, Number(rule.weekday) || 0)), weeks: weeks, dates: dates, monthDays: monthDays, monthDates: monthDates, showName: rule.showName !== false, restMode: restMode, restEmployeeIds: restMode === "selected" ? restEmployeeIds : [] };
     }).filter(function(rule) { return !!rule.name; });
     safeSetProperty_("SHIFT_SPECIAL_DAY_RULES_JSON", JSON.stringify(rules));
-    PropertiesService.getScriptProperties().setProperty("SHIFT_BAND_V3_MIGRATED", "1");
+    shiftProps_().setProperty("SHIFT_BAND_V3_MIGRATED", "1");
     return createJsonDataResponse({ success: true, rules: rules });
   } catch (error) { return createJsonResponse(false, error.message || "特殊日設定を保存できませんでした。"); }
   finally { try { lock.releaseLock(); } catch (_) {} }
@@ -1747,7 +1835,7 @@ function normalizeShiftStaffingRules_(input) {
 
 function getShiftStaffingRules() {
   try {
-    var raw = PropertiesService.getScriptProperties().getProperty("SHIFT_STAFFING_RULES_JSON");
+    var raw = shiftProps_().getProperty("SHIFT_STAFFING_RULES_JSON");
     var rules = normalizeShiftStaffingRules_(raw ? JSON.parse(raw) : {});
     return createJsonDataResponse({ success: true, rules: rules });
   } catch (error) { return createJsonResponse(false, error.message || "人数の設定を取得できませんでした。"); }
@@ -1770,7 +1858,7 @@ function saveShiftStaffingRules(data) {
 /** 店舗共通の月次シフト期間。開始日を決めると終了日は前日へ自動設定します。 */
 function getShiftCalendarPeriodSettings() {
   try {
-    var raw = PropertiesService.getScriptProperties().getProperty("SHIFT_CALENDAR_PERIOD_JSON");
+    var raw = shiftProps_().getProperty("SHIFT_CALENDAR_PERIOD_JSON");
     var settings = raw ? JSON.parse(raw) : { startDay: 1, endDay: 0 };
     return createJsonDataResponse({ success: true, settings: settings });
   } catch (error) {
@@ -1790,7 +1878,7 @@ function saveShiftCalendarPeriodSettings(data) {
     }
     var settings = { startDay: startDay, endDay: startDay === 1 ? 0 : startDay - 1 };
     return withShiftLock_(function() {
-      PropertiesService.getScriptProperties().setProperty("SHIFT_CALENDAR_PERIOD_JSON", JSON.stringify(settings));
+      shiftProps_().setProperty("SHIFT_CALENDAR_PERIOD_JSON", JSON.stringify(settings));
       return createJsonDataResponse({ success: true, settings: settings });
     });
   } catch (error) {
@@ -1821,7 +1909,7 @@ function getShiftPendingStatus(data) {
 // ---------- エラー記録（画面で起きたエラーを、管理者が設定で見られるようにする） ----------
 var SHIFT_ERROR_LOG_KEY_ = "SHIFT_ERROR_LOG_JSON";
 function readShiftErrorLog_() {
-  try { var list = JSON.parse(PropertiesService.getScriptProperties().getProperty(SHIFT_ERROR_LOG_KEY_) || "[]"); return Array.isArray(list) ? list : []; }
+  try { var list = JSON.parse(shiftProps_().getProperty(SHIFT_ERROR_LOG_KEY_) || "[]"); return Array.isArray(list) ? list : []; }
   catch (e) { return []; }
 }
 /** 画面側で起きたエラーを1件記録する（同じ内容は回数だけ増やす。直近15件、容量は約7KBまで）。記録に失敗しても画面には影響させない。 */
@@ -1842,7 +1930,7 @@ function logShiftClientError(data) {
       list.sort(function(a, b) { return a.t < b.t ? 1 : -1; });
       list = list.slice(0, 15);
       while (list.length > 1 && JSON.stringify(list).length > 7000) list.pop();
-      PropertiesService.getScriptProperties().setProperty(SHIFT_ERROR_LOG_KEY_, JSON.stringify(list));
+      shiftProps_().setProperty(SHIFT_ERROR_LOG_KEY_, JSON.stringify(list));
     } finally { lock.releaseLock(); }
     return createJsonDataResponse({ success: true });
   } catch (error) { return createJsonResponse(false, error.message || "記録できませんでした。"); }
@@ -1852,7 +1940,7 @@ function getShiftErrorLog(data) {
   catch (error) { return createJsonResponse(false, error.message || "取得できませんでした。"); }
 }
 function clearShiftErrorLog(data) {
-  try { verifyShiftApiKey(data.shiftApiKey); PropertiesService.getScriptProperties().deleteProperty(SHIFT_ERROR_LOG_KEY_); return createJsonDataResponse({ success: true }); }
+  try { verifyShiftApiKey(data.shiftApiKey); shiftProps_().deleteProperty(SHIFT_ERROR_LOG_KEY_); return createJsonDataResponse({ success: true }); }
   catch (error) { return createJsonResponse(false, error.message || "消去できませんでした。"); }
 }
 
@@ -1882,7 +1970,7 @@ function saveShiftMonth(data) {
     if (lockRowDates.length) { lockRangeStart = lockRowDates[0]; lockRangeEnd = lockRowDates[lockRowDates.length - 1]; }
     if (lockRangeStart) {
       var lockStatuses = {};
-      try { lockStatuses = JSON.parse(PropertiesService.getScriptProperties().getProperty("SHIFT_PERIOD_STATUSES_JSON") || "{}"); } catch (_) { lockStatuses = {}; }
+      try { lockStatuses = JSON.parse(shiftProps_().getProperty("SHIFT_PERIOD_STATUSES_JSON") || "{}"); } catch (_) { lockStatuses = {}; }
       Object.keys(lockStatuses).forEach(function(startKey) {
         var status = lockStatuses[startKey];
         if (!status || !status.locked || !/^\d{4}-\d{2}-\d{2}$/.test(startKey)) return;
@@ -1934,7 +2022,7 @@ function readShiftPeriodStatusForCorrection(periodStart) {
 function getShiftCorrectionVisibility(data) {
   try {
     requireShiftSession(data.sessionToken);
-    var stored = PropertiesService.getScriptProperties().getProperty("SHIFT_CORRECTION_VISIBILITY_" + getStoreId());
+    var stored = shiftProps_().getProperty("SHIFT_CORRECTION_VISIBILITY_" + getStoreId());
     return createJsonDataResponse({ success: true, visibility: stored === "private" ? "private" : "all" });
   } catch (error) { return createJsonResponse(false, error.message || "公開設定を取得できませんでした。"); }
 }
@@ -1947,7 +2035,7 @@ function saveShiftCorrectionVisibility(data) {
     var visibility = data.visibility;
     if (visibility !== "all" && visibility !== "private") throw new Error("公開設定が正しくありません。");
     return withShiftLock_(function() {
-      PropertiesService.getScriptProperties().setProperty("SHIFT_CORRECTION_VISIBILITY_" + getStoreId(), visibility);
+      shiftProps_().setProperty("SHIFT_CORRECTION_VISIBILITY_" + getStoreId(), visibility);
       appendShiftAudit(data, "訂正依頼公開設定変更", getStoreId(), null, { visibility: visibility });
       return createJsonDataResponse({ success: true, visibility: visibility });
     });
@@ -1956,7 +2044,7 @@ function saveShiftCorrectionVisibility(data) {
 
 /** 新店舗の初期操作員を一人登録します。GASエディタで一度だけ実行してください。 */
 function initializeShiftOperator() {
-  var props = PropertiesService.getScriptProperties();
+  var props = shiftProps_();
   var name = sanitizeText(props.getProperty("SHIFT_INITIAL_OPERATOR_NAME"), 100).trim();
   if (!name) throw new Error("SHIFT_INITIAL_OPERATOR_NAME を設定してください。");
   var master = normalizeShiftEmployeeMaster(readShiftEmployeeMaster());
@@ -1970,7 +2058,7 @@ function initializeShiftOperator() {
 
 /** 初期化は、スクリプトプロパティ SHIFT_RESET_ALLOWED_SHEET_ID にこのスプレッドシートのIDを入れた配布元用の控えだけで許可します（本番の店舗を誤って消さないための安全装置）。 */
 function assertTemplateResetTarget() {
-  var p = PropertiesService.getScriptProperties();
+  var p = shiftProps_();
   var allowed = p.getProperty("SHIFT_RESET_ALLOWED_SHEET_ID");
   if (!allowed || allowed !== ss_().getId()) throw new Error("このスプレッドシートは初期化を許可されていません。初期化できません。");
   return p;
@@ -2094,7 +2182,7 @@ function defaultShiftWorkTimeMaster() {
   ] };
 }
 function readShiftWorkTimeMaster() {
-  var raw = PropertiesService.getScriptProperties().getProperty("SHIFT_WORK_TIME_MASTER_" + getStoreId());
+  var raw = shiftProps_().getProperty("SHIFT_WORK_TIME_MASTER_" + getStoreId());
   return raw ? JSON.parse(raw) : defaultShiftWorkTimeMaster();
 }
 function getShiftWorkTimeMaster(data) {
