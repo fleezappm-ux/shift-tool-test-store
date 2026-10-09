@@ -49,10 +49,11 @@ let rec=ctx.reconcileShiftPaidLeaveForPeriod('2026-10-01','2026-10-31',true);ass
 assert.equal(ctx.getShiftPendingStatus({}).count,0);assert.equal(ctx.flushShiftPending({shiftApiKey:'x'}).pending,0);
 // 9. 休み希望の控えが「休み希望」シートに作られ、更新・削除に追従する
 const req={id:'q1',employeeId:'e1',employeeName:'藤川',date:'2026-10-20',periodStart:'2026-10-01',periodEnd:'2026-10-31',type:'休み希望',comment:'通院',commentVisibility:'all',status:'申請中',submittedAt:'t0',updatedAt:'t0'};
-ctx.syncShiftLeaveRequestToSheet_(req);let rs=book.sheets['休み希望'];assert.equal(rs.data.length,2);assert.equal(rs.data[1][0],'q1');
-ctx.syncShiftLeaveRequestToSheet_({...req,status:'承認'});assert.equal(rs.data.length,2);assert.equal(rs.data[1][9],'承認');
-ctx.syncShiftLeaveRequestToSheet_({...req,id:'q2'});assert.equal(rs.data.length,3);
-ctx.removeShiftLeaveRequestFromSheet_('q1');assert.equal(rs.data.length,2);assert.equal(rs.data[1][0],'q2');
+ctx.writeShiftLeaveRequestStore('2026-10-01',[req]);let rs=book.sheets['休み希望'];assert.equal(rs.data.length,2);assert.equal(rs.data[1][0],'q1');
+ctx.writeShiftLeaveRequestStore('2026-10-01',[{...req,status:'承認'}]);assert.equal(rs.data.length,2);assert.equal(rs.data[1][9],'承認');
+ctx.writeShiftLeaveRequestStore('2026-10-01',[{...req,status:'承認'},{...req,id:'q2'}]);assert.equal(rs.data.length,3);
+ctx.writeShiftLeaveRequestStore('2026-10-01',[{...req,id:'q2'}]);assert.equal(rs.data.length,2);assert.equal(rs.data[1][0],'q2');
+ctx.writeShiftLeaveRequestStore('2026-10-01',[]);assert.equal(rs.data.length,1);
 // 10. 大きさ：50人×62日（3,100行）の保存・取得（メモリ上）
 const many=[];for(let e=0;e<50;e++)for(let d=1;d<=31;d++)many.push(row('2026-10-'+String(d).padStart(2,'0'),'早番','id'+e,'社員'+e));
 const t0=Date.now();r=ctx.saveShiftMonth({...base,shifts:many});assert.equal(r.success,true,r.message);
@@ -81,5 +82,23 @@ console.log('PASS: sheet storage (create, read, diff-only writes, delete, valida
   // 休み希望は1期間に500件以上でも保存できる
   const many=Array.from({length:500},(_,i)=>({id:'q'+i,employeeId:'e1',employeeName:'藤川',date:'2026-10-20',periodStart:'2026-10-01',periodEnd:'2026-10-31',type:'休み希望',comment:'',status:'申請中',submittedAt:'t',updatedAt:'t'}));
   ctx.writeShiftLeaveRequestStore('2026-10-01',many);assert.equal(ctx.readShiftLeaveRequestStore('2026-10-01').length,500);
+}
+{
+  // 休み希望は「休み希望」シートが本体（更新・削除・古い保存場所からの自動移行）
+  const lv=ctx.readShiftLeaveRequestStore('2026-10-01');
+  const sh=book.sheets['休み希望'];assert.equal(sh.data.length-1,500,'シートに500行');
+  const first=lv[0];first.status='承認';first.desiredWorkStart='09:00';
+  ctx.writeShiftLeaveRequestStore('2026-10-01',lv);
+  const again=ctx.readShiftLeaveRequestStore('2026-10-01');assert.equal(again[0].status,'承認');assert.equal(again[0].desiredWorkStart,'09:00');
+  const f=ctx.findShiftLeaveRequestStore('q7');assert.equal(f.request.id,'q7');assert.equal(f.key,'SHIFT_LEAVE_REQUESTS_2026-10-01');
+  ctx.writeShiftLeaveRequestStoreByKey_(f.key,f.items.filter(x=>x.id!=='q7'));
+  assert.equal(ctx.readShiftLeaveRequestStore('2026-10-01').length,499);assert.throws(()=>ctx.findShiftLeaveRequestStore('q7'));
+  // 別の期間は影響を受けない
+  ctx.writeShiftLeaveRequestStore('2026-11-01',[{id:'n1',employeeId:'e1',employeeName:'藤川',date:'2026-11-05',periodStart:'2026-11-01',periodEnd:'2026-11-30',type:'休み希望',status:'申請中',submittedAt:'t',updatedAt:'t'}]);
+  assert.equal(ctx.readShiftLeaveRequestStore('2026-10-01').length,499);assert.equal(ctx.readShiftLeaveRequestStore('2026-11-01').length,1);
+  // 以前の保存場所にある希望は読み込み時にシートへ移る
+  props['SHIFT_LEAVE_REQUESTS_2026-12-01']=JSON.stringify([{id:'old1',employeeId:'e1',employeeName:'藤川',date:'2026-12-03',periodStart:'2026-12-01',periodEnd:'2026-12-31',type:'有給希望',status:'申請中',submittedAt:'t',updatedAt:'t'}]);
+  assert.equal(ctx.readShiftLeaveRequestStore('2026-12-01')[0].id,'old1');assert.equal(props['SHIFT_LEAVE_REQUESTS_2026-12-01'],undefined);
+  assert.equal(ctx.findShiftLeaveRequestStore('old1').request.type,'有給希望');
 }
 console.log('PASS: settings sheet (secrets stay private, 300 staff, 500 requests, migration from old storage)');

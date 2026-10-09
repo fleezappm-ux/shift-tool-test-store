@@ -324,32 +324,6 @@ function applyShiftRowsToSheet_(incomingRows, periodStart, periodEnd, updatedBy)
   return { created: created, updated: updated, cleared: cleared, unchanged: unchanged };
 }
 
-/** 休み希望を「休み希望」シートに1行で記録します（申請IDで探して上書き、なければ追加）。控えの記録なので、失敗しても申請自体は止めません。 */
-function syncShiftLeaveRequestToSheet_(request) {
-  if (!request) return;
-  try {
-    var sheet = requestSheet_();
-    var values = [request.id, request.employeeId || "", request.employeeName, request.date || "", request.periodStart, request.periodEnd, request.type, request.comment || "", request.commentVisibility === "editors" ? "編集者のみ" : "全員", request.status, request.submittedAt, request.updatedAt, request.desiredWorkStart || "", request.desiredWorkEnd || "", request.rejectionReason || ""];
-    var last = sheet.getLastRow();
-    var rowNo = 0;
-    if (last >= 2) {
-      var ids = sheet.getRange(2, 1, last - 1, 1).getValues();
-      for (var i = 0; i < ids.length; i++) { if (String(ids[i][0]) === String(request.id)) { rowNo = i + 2; break; } }
-    }
-    if (!rowNo) rowNo = last + 1;
-    sheet.getRange(rowNo, 1, 1, values.length).setValues([values]);
-  } catch (error) { console.error("休み希望シートへの記録に失敗: " + error); }
-}
-function removeShiftLeaveRequestFromSheet_(id) {
-  try {
-    var sheet = requestSheet_();
-    var last = sheet.getLastRow();
-    if (last < 2) return;
-    var ids = sheet.getRange(2, 1, last - 1, 1).getValues();
-    for (var i = ids.length - 1; i >= 0; i--) { if (String(ids[i][0]) === String(id)) sheet.deleteRow(i + 2); }
-  } catch (error) { console.error("休み希望シートからの削除に失敗: " + error); }
-}
-
 /* ============================================================
  * 設定の保存先（「設定」シート）
  * 従業員・勤務時間・お知らせ・休み希望などの設定は「設定」シートに、
@@ -1458,45 +1432,89 @@ function getShiftLeaveRequestPropertyKey(periodStart) {
 
 
 
-function readShiftLeaveRequestStore(periodStart) {
-  var raw = shiftProps_().getProperty(getShiftLeaveRequestPropertyKey(periodStart));
-  if (!raw) return [];
-  try {
-    var parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (_) {
-    return [];
+/* 休み希望の保存先は「休み希望」シートです（1申請＝1行）。 */
+function leaveRowToRequest_(v) {
+  return {
+    id: cellText_(v[0]), employeeId: cellText_(v[1]), employeeName: cellText_(v[2]), date: cellText_(v[3]).slice(0, 10),
+    periodStart: cellText_(v[4]).slice(0, 10), periodEnd: cellText_(v[5]).slice(0, 10), type: cellText_(v[6]), comment: cellText_(v[7]),
+    commentVisibility: cellText_(v[8]) === "編集者のみ" ? "editors" : "all", status: cellText_(v[9]) || "申請中",
+    submittedAt: cellText_(v[10]), updatedAt: cellText_(v[11]), desiredWorkStart: cellText_(v[12]), desiredWorkEnd: cellText_(v[13]), rejectionReason: cellText_(v[14])
+  };
+}
+function leaveRequestToRow_(r) {
+  return [r.id, r.employeeId || "", r.employeeName || "", r.date || "", r.periodStart, r.periodEnd, r.type, r.comment || "", r.commentVisibility === "editors" ? "編集者のみ" : "全員", r.status || "申請中", r.submittedAt || "", r.updatedAt || "", r.desiredWorkStart || "", r.desiredWorkEnd || "", r.rejectionReason || ""];
+}
+/** 「休み希望」シートの全行を読みます。 */
+function readLeaveSheetRows_() {
+  var sheet = requestSheet_();
+  var last = sheet.getLastRow();
+  if (last < 2) return [];
+  var values = sheet.getRange(2, 1, last - 1, REQUEST_SHEET_HEADERS_.length).getValues();
+  var rows = [];
+  for (var i = 0; i < values.length; i++) {
+    if (!cellText_(values[i][0])) continue;
+    rows.push({ sheetRow: i + 2, request: leaveRowToRequest_(values[i]) });
   }
+  return rows;
+}
+/** 以前の保存場所（設定）に残っている休み希望を、シートへ移します。 */
+function migrateLegacyLeaveRequests_(onlyKey) {
+  var props = shiftProps_();
+  var keys = onlyKey ? [onlyKey] : Object.keys(props.getProperties()).filter(function(k) { return k.indexOf("SHIFT_LEAVE_REQUESTS_") === 0; });
+  keys.forEach(function(key) {
+    var raw = props.getProperty(key);
+    if (!raw) return;
+    var items = [];
+    try { items = JSON.parse(raw); } catch (_) { items = []; }
+    if (Array.isArray(items) && items.length) {
+      var have = {};
+      readLeaveSheetRows_().forEach(function(r) { have[r.request.id] = true; });
+      var add = items.filter(function(item) { return item && item.id && item.periodStart && !have[item.id]; });
+      if (add.length) {
+        var sheet = requestSheet_();
+        sheet.getRange(sheet.getLastRow() + 1, 1, add.length, REQUEST_SHEET_HEADERS_.length).setValues(add.map(leaveRequestToRow_));
+      }
+    }
+    props.deleteProperty(key);
+  });
 }
 
-
+function readShiftLeaveRequestStore(periodStart) {
+  var key = getShiftLeaveRequestPropertyKey(periodStart);
+  migrateLegacyLeaveRequests_(key);
+  var safeStart = sanitizeDateValue(periodStart);
+  return readLeaveSheetRows_().filter(function(r) { return r.request.periodStart === safeStart; }).map(function(r) { return r.request; });
+}
 
 function writeShiftLeaveRequestStore(periodStart, requests) {
   writeShiftLeaveRequestStoreByKey_(getShiftLeaveRequestPropertyKey(periodStart), requests);
 }
 
-
-
 /**
- * 1期間分の希望を「設定」シートへ保存する共通処理。
- * 容量が大きくなりすぎたときだけ「取消」済みの希望を整理し、それでも上限を超える場合は保存しません。
+ * 1期間分の希望を「休み希望」シートへ保存します（変わった行だけ書き、消えた行は削除）。
  */
 function writeShiftLeaveRequestStoreByKey_(key, requests) {
-  if (requests.length > 3000) throw new Error("この期間の希望件数が上限を超えています。");
-  var json = JSON.stringify(requests);
-  if (shiftByteLength_(json) > 200000) {
-    var trimmed = requests.filter(function(item) { return item.status !== "取消"; });
-    if (trimmed.length !== requests.length) {
-      requests.length = 0;
-      trimmed.forEach(function(item) { requests.push(item); });
-      json = JSON.stringify(requests);
-    }
-  }
-  if (shiftByteLength_(json) > 300000) throw new Error("この期間の希望が上限に達しました。管理者に連絡し、対応済みの希望を整理してください。");
-  shiftProps_().setProperty(key, json);
+  var periodStart = key.replace("SHIFT_LEAVE_REQUESTS_", "");
+  if (requests.length > 5000) throw new Error("この期間の希望件数が上限を超えています。");
+  var sheet = requestSheet_();
+  var width = REQUEST_SHEET_HEADERS_.length;
+  var existing = readLeaveSheetRows_().filter(function(r) { return r.request.periodStart === periodStart; });
+  var byId = {};
+  existing.forEach(function(r) { byId[r.request.id] = r; });
+  var wanted = {};
+  var appends = [];
+  requests.forEach(function(item) {
+    wanted[item.id] = true;
+    var row = leaveRequestToRow_(item);
+    var old = byId[item.id];
+    if (!old) { appends.push(row); return; }
+    if (JSON.stringify(leaveRequestToRow_(old.request)) !== JSON.stringify(row)) sheet.getRange(old.sheetRow, 1, 1, width).setValues([row]);
+  });
+  var removeRows = existing.filter(function(r) { return !wanted[r.request.id]; }).map(function(r) { return r.sheetRow; }).sort(function(a, b) { return b - a; });
+  removeRows.forEach(function(n) { sheet.deleteRow(n); });
+  if (appends.length) sheet.getRange(sheet.getLastRow() + 1, 1, appends.length, width).setValues(appends);
+  SpreadsheetApp.flush();
 }
-
-
 
 /** 希望提出の対象期間を確認します（開始日がシフト期間の設定どおりで、前後18か月以内であること）。 */
 function assertShiftLeavePeriod_(periodStart) {
@@ -1619,7 +1637,6 @@ function saveShiftLeaveRequest(data) {
       requests.push(existing);
     }
     writeShiftLeaveRequestStore(periodStart, requests);
-    syncShiftLeaveRequestToSheet_(existing, isNewRequest);
     appendShiftAudit({ sessionToken: data.employeeToken }, "休み希望提出", existing.id, null, existing);
     return createJsonDataResponse({ success: true, request: existing });
   } catch (error) {
@@ -1631,18 +1648,17 @@ function saveShiftLeaveRequest(data) {
 
 
 function findShiftLeaveRequestStore(id) {
-  var properties = shiftProps_().getProperties();
-  var keys = Object.keys(properties).filter(function(key) { return key.indexOf("SHIFT_LEAVE_REQUESTS_") === 0; });
-  for (var i = 0; i < keys.length; i++) {
-    var items;
-    try { items = JSON.parse(properties[keys[i]] || "[]"); } catch (_) { items = []; }
-    var found = items.find(function(item) { return item.id === id; });
-    if (found) return { key: keys[i], items: items, request: found };
+  migrateLegacyLeaveRequests_();
+  var rows = readLeaveSheetRows_();
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].request.id === id) {
+      var periodStart = rows[i].request.periodStart;
+      var items = rows.filter(function(r) { return r.request.periodStart === periodStart; }).map(function(r) { return r.request; });
+      return { key: getShiftLeaveRequestPropertyKey(periodStart), items: items, request: items.filter(function(x) { return x.id === id; })[0] };
+    }
   }
   throw new Error("対象の希望申請が見つかりません。");
 }
-
-
 
 function cancelShiftLeaveRequest(data) {
   var lock = shiftLockHandle_();
@@ -1654,7 +1670,6 @@ function cancelShiftLeaveRequest(data) {
     store.request.status = "取消";
     store.request.updatedAt = new Date().toISOString();
     writeShiftLeaveRequestStoreByKey_(store.key, store.items);
-    syncShiftLeaveRequestToSheet_(store.request);
     appendShiftAudit({ sessionToken: data.employeeToken }, "休み希望取消", store.request.id, null, store.request);
     return createJsonDataResponse({ success: true, request: store.request });
   } catch (error) {
@@ -1678,7 +1693,6 @@ function updateShiftLeaveRequestStatus(data) {
     store.request.rejectionReason = status === "却下" ? sanitizeText(data.rejectionReason || "", 300) : "";
     store.request.updatedAt = new Date().toISOString();
     writeShiftLeaveRequestStoreByKey_(store.key, store.items);
-    syncShiftLeaveRequestToSheet_(store.request);
     appendShiftAudit(data, "休み希望状態変更", store.request.id, null, store.request);
     return createJsonDataResponse({ success: true, request: store.request });
   } catch (error) {
@@ -1699,7 +1713,6 @@ function deleteShiftLeaveRequest(data) {
     var before = JSON.parse(JSON.stringify(store.request));
     var remaining = store.items.filter(function(item) { return item.id !== before.id; });
     writeShiftLeaveRequestStoreByKey_(store.key, remaining);
-    removeShiftLeaveRequestFromSheet_(before.id);
     appendShiftAudit(data, "休み希望削除", before.id, before, null);
     return createJsonDataResponse({ success: true });
   } catch (error) {
@@ -1726,7 +1739,6 @@ function updateShiftLeaveRequestWorkTime(data) {
     item.desiredWorkEnd = end;
     item.updatedAt = new Date().toISOString();
     writeShiftLeaveRequestStoreByKey_(store.key, store.items);
-    syncShiftLeaveRequestToSheet_(item);
     appendShiftAudit({ sessionToken: data.employeeToken }, "出勤希望時間変更", item.id, null, item);
     return createJsonDataResponse({ success: true, request: item });
   } catch (error) {
@@ -2164,6 +2176,8 @@ function runTemplateReset(data) {
       // PINも、残す操作員1名のぶん以外は消す（消えた従業員の記録を残さない）。
       if (key.indexOf("SHIFT_PIN_") === 0 && key !== shiftPinPropertyKey_(authorization.operator.id)) p.deleteProperty(key);
     });
+    // 休み希望シートの申請も全部消す（見出しの行は残す）。
+    try { var leaveSheet = requestSheet_(); if (leaveSheet.getLastRow() > 1) leaveSheet.deleteRows(2, leaveSheet.getLastRow() - 1); } catch (_) {}
     p.deleteProperty("SHIFT_TEMPLATE_RESET_AUTH");
     // 他の端末が次に開いたとき、端末内の設定を自動で消すための目印。
     p.setProperty("SHIFT_RESET_EPOCH", String(Date.now()));

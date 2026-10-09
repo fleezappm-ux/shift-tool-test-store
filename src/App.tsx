@@ -103,6 +103,9 @@ import { fetchWorkTimeMaster, saveWorkTimeMaster } from "./lib/work-time-sync";
 import { ShiftDisplayControl } from "./components/ShiftDisplayControl";
 import { fetchAutoDraftSettings, saveAutoDraftSettings } from "./lib/auto-draft-sync";
 
+// 「質問に答えてシフト案を作る」は仕上げの段階で戻すため、いまは非表示にしています。
+const SHOW_SHIFT_WIZARD = false;
+
 const EMPLOYEE_MASTER_CACHE_KEY = "employee_master_cache_v1";
 
 function readCachedEmployeeMaster(): EmployeeMasterItem[] | null {
@@ -2252,7 +2255,7 @@ export default function App() {
                     </dialog>
                     {correctionPopup && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4" onClick={() => setCorrectionPopup(null)}><div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl" onClick={event => event.stopPropagation()}><h3 className="text-lg font-black text-red-700">訂正依頼</h3><p className="mt-2 text-sm font-bold">{correctionPopup.request.employeeName}　{correctionPopup.request.date ? format(new Date(`${correctionPopup.request.date}T00:00:00`), "M/d（E）", { locale: ja }) : ""}</p><div className="mt-3 rounded-xl bg-slate-100 p-3 text-sm"><span className="text-xs font-bold text-slate-500">現在の勤務</span><p className="font-black">{correctionPopup.shiftText}</p></div><div className="mt-2 rounded-xl bg-red-50 p-3 text-sm"><span className="text-xs font-bold text-red-700">依頼内容</span><p className="whitespace-pre-wrap font-bold">{correctionPopup.request.comment || "（コメントなし）"}</p></div><p className="mt-3 text-xs text-slate-600">返事が必要なら「管理者からのお知らせ」で本人を指定して送れます。</p><div className="mt-4 grid grid-cols-2 gap-2"><Button variant="outline" onClick={() => setCorrectionPopup(null)}>閉じる</Button>{appSession.role === "admin" && <Button className="bg-red-600 hover:bg-red-700" onClick={async () => { const target = correctionPopup.request; try { const saved = await updateLeaveRequestStatus(target.id, "対応済み"); setLeaveRequests(prev => prev.map(r => r.id === saved.id ? saved : r)); setHomePendingCorrections(prev => prev.filter(r => r.id !== saved.id)); setCorrectionPopup(null); toast.success("確認しました"); } catch (error) { toast.error(error instanceof Error ? error.message : "更新できませんでした"); } }}>確認した</Button>}</div></div></div>}
                     {isFromAdmin && showLeaveManager && <LeaveRequestManager requests={leaveRequests} loading={leaveRequestLoading} onStatusChange={handleLeaveRequestStatus} onDelete={handleLeaveRequestDelete} />}
-                    {inCreation && overviewEditing && !isLocked && <div className="rounded-xl border-2 border-blue-200 bg-blue-50 p-3" data-auto-assign-bar>
+                    {SHOW_SHIFT_WIZARD && inCreation && overviewEditing && !isLocked && <div className="rounded-xl border-2 border-blue-200 bg-blue-50 p-3" data-auto-assign-bar>
                       <div className="flex flex-wrap items-center gap-2"><Button type="button" className="h-11 font-bold" disabled={periodStatusLoading} onClick={() => setWizardOpen(true)} data-wizard-open><Wand2 className="mr-2 h-4 w-4" />質問に答えてシフト案を作る</Button>{autoUndo && <Button type="button" variant="outline" className="h-11 font-bold" onClick={undoAutoPlan} data-auto-assign-undo>さっき入れた{autoUndo.count}か所を元に戻す</Button>}</div>
                       <p className="mt-2 text-xs leading-6 text-blue-900">いくつかの質問（最低人数・連勤など）に答えると、「こんなシフトになります」と言葉で確認してから、足りない日に出勤を足す案を作ります。使うかどうかは、案を見てから選べます。今入っている勤務は変えません。</p>
                     </div>}

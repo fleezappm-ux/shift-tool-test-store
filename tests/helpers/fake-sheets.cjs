@@ -11,6 +11,7 @@ function makeFakeSpreadsheet(id) {
       getMaxRows() { return Math.max(1000, data.length); },
       setFrozenRows() {},
       deleteRow(n) { data.splice(n - 1, 1); },
+      deleteRows(n, c) { data.splice(n - 1, c); },
       getRange(r, c, h = 1, w = 1) {
         return {
           getValues() { stats.reads++; const out = []; for (let i = 0; i < h; i++) { const row = []; for (let j = 0; j < w; j++) row.push((data[r - 1 + i] || [])[c - 1 + j] ?? ''); out.push(row); } return out; },
