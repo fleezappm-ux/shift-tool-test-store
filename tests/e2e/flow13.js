@@ -1,0 +1,67 @@
+// 人数・連勤のチェック＋ルールで足りない日を埋める案。疑似GASで確認。
+const {chromium}=require('playwright-core');
+const OUT=process.env.OUT||'/tmp';
+const staff=[['df38','降旗','薬剤師','pharmacist'],['2a7d','藤川','薬剤師','pharmacist'],['3c9e','田中','薬剤師','pharmacist']];
+const master=staff.map((s,i)=>({id:s[0],name:s[1],displayName:s[1],displayOrder:i+1,active:true,aliases:[],role:s[2],roleId:s[3]}));
+const shifts=[];
+for(const s of staff)for(let d=new Date('2026-09-01');d<=new Date('2026-12-31');d.setDate(d.getDate()+1)){
+  const iso=d.toISOString().slice(0,10);let c='9:00～18:00';
+  if(d.getDay()===0)c='休み'; if(s[0]==='2a7d'&&d.getDay()===4)c='休み'; if(s[0]==='3c9e')c='休み';
+  shifts.push({id:`${s[0]}-${iso}`,'従業員ID':s[0],'社員名':s[1],'日付':{start:iso},'シフト内容':c,'休憩時間':c==='休み'?'':'1:00','実働時間':'8:00','備考':''});}
+let rules={minTotal:[0,0,0,0,2,0,0],roleMins:[],maxConsecutive:0,people:{}};let saved=0;
+const handle=(a,b)=>{const ok={success:true};switch(a){
+ case 'getShiftResetEpoch':return {...ok,epoch:''};
+ case 'getShiftLoginEmployees':return {...ok,employees:master};
+ case 'getShiftEmployeeMaster':return {...ok,employees:master,revision:'r1'};
+ case 'getShiftRoleMaster':return {...ok,roles:[{id:'pharmacist',name:'薬剤師'},{id:'clerk',name:'事務員'}]};
+ case 'getShiftHomeLayout':return {...ok,layout:{visible:true,columns:[['pharmacist'],['clerk']]}};
+ case 'getShiftWorkTimeMaster':return {...ok,master:{revision:'r',items:[{id:'w1',start:'09:00',end:'18:00',nextDay:false,abbreviation:'早番',visible:true}]}};
+ case 'getShiftCalendarPeriodSettings':return {...ok,settings:{startDay:1,endDay:0}};
+ case 'getShiftSpecialDayRules':return {...ok,rules:[]};
+ case 'getShiftStaffingRules':return {...ok,rules};
+ case 'saveShiftStaffingRules':saved++;rules=b.rules;return {...ok,rules};
+ case 'getShifts':return {...ok,shifts};
+ case 'getShiftHolidays':return {...ok,holidays:[]};
+ case 'getShiftPeriodStatus':return {...ok,locked:false};
+ case 'getShiftLeaveRequests':return {...ok,requests:[{id:'l1',employeeId:'3c9e',employeeName:'田中',date:'2026-10-08',periodStart:'2026-10-01',periodEnd:'2026-10-31',type:'休み希望',comment:'',commentVisibility:'all',status:'承認',submittedAt:'2026-09-01T00:00:00Z',updatedAt:'2026-09-01T00:00:00Z'}]};
+ default:return ok;}};
+(async()=>{const br=await chromium.launch({executablePath:process.env.CHROME||'/opt/pw-browsers/chromium-1194/chrome-linux/chrome'});
+const ctx=await br.newContext({viewport:{width:390,height:844},locale:'ja-JP',timezoneId:'Asia/Tokyo'});
+await ctx.addInitScript(()=>{const ns='shift-tool:v1:/:';localStorage.setItem(ns+'shift_app_session',JSON.stringify({token:'mock',role:'admin',employeeId:'df38',employeeName:'降旗',expiresAt:new Date(Date.now()+864e5*7).toISOString()}));localStorage.setItem(ns+'shift_api_key','mock');});
+const p=await ctx.newPage();const errs=[];p.on('pageerror',e=>errs.push(e.message));p.on('dialog',d=>d.accept().catch(()=>{}));
+await p.route('**/version.json*',r=>r.fulfill({status:404,body:''}));
+await p.route('https://script.google.com/**',async r=>{let b={};try{b=JSON.parse(r.request().postData()||'{}')}catch{}
+ const out=b.action==='batchShift'?{success:true,results:b.calls.map(c=>handle(c.action,c))}:handle(b.action,b);
+ r.fulfill({status:200,contentType:'application/json',headers:{'access-control-allow-origin':'*'},body:JSON.stringify(out)});});
+const ok=(l,v)=>console.log(v?'OK ':'NG ',l);
+await p.goto('http://127.0.0.1:5199/',{waitUntil:'networkidle'});await p.waitForTimeout(1200);
+await p.getByRole('button',{name:'シフト作成'}).first().click();await p.waitForTimeout(1200);
+ok('ルールで埋めるボタンが出る',await p.locator('[data-auto-assign-bar]').count()===1);
+await p.getByRole('button',{name:'質問に答えてシフト案を作る'}).click();await p.waitForTimeout(500);
+ok('ウィザードが開く（1/5）',await p.locator('[data-wizard]').count()===1&&await p.getByText('1 / 5').count()===1);
+await p.getByLabel('最低人数の月から金をまとめて').fill('2');
+await p.getByRole('button',{name:'次へ'}).click();await p.waitForTimeout(300);
+await p.getByRole('button',{name:'次へ'}).click();await p.waitForTimeout(300);
+await p.getByRole('button',{name:'最大7日'}).click();
+await p.getByRole('button',{name:'次へ'}).click();await p.waitForTimeout(300);
+ok('前月の実績から藤川さんの木曜休みが先に入っている',await p.getByLabel('藤川は木曜に入れない').isChecked());
+await p.getByLabel('藤川は木曜に入れない').uncheck();await p.getByRole('button',{name:'藤川は週決めない'}).click();
+await p.getByLabel('田中は日曜に入れない').check();
+await p.getByRole('button',{name:'次へ'}).click();await p.waitForTimeout(300);
+const sum=await p.locator('[data-wizard-summary]').innerText();
+ok('まとめが言葉で出る',/月〜金は最低2人/.test(sum)&&/最大7日/.test(sum)&&/田中さんは、毎週日曜は休み/.test(sum)&&/休み希望・有給希望（1件）/.test(sum));
+await p.screenshot({path:OUT+'/wizard-summary.png'});
+await p.getByRole('button',{name:'この条件で案を作る'}).click();await p.waitForTimeout(600);
+const changes=await p.locator('[data-auto-assign-changes]').innerText();
+ok('案が出る（休み希望の田中さんは10/8に入らない）',/10\/8/.test(changes)&&!/10\/8[^\n]*田中/.test(changes));
+await p.screenshot({path:OUT+'/auto-assign-dialog.png'});
+const before=saved;
+const savedBefore=saved;await p.locator('[data-wizard-apply]').click();await p.waitForTimeout(1500);
+ok('画面が閉じる',await p.locator('[data-wizard]').count()===0);
+ok('答えが設定に保存された',saved===savedBefore+1&&rules.minTotal[1]===2&&rules.maxConsecutive===7&&rules.people['3c9e'].ngWeekdays.includes(0));
+ok('元に戻すボタンが出る',await p.locator('[data-auto-assign-undo]').count()===1);
+ok('警告がなくなる',await p.locator('[data-staffing-warnings]').count()===0);
+await p.screenshot({path:OUT+'/auto-assign-applied.png'});
+await p.locator('[data-auto-assign-undo]').click();await p.waitForTimeout(800);
+ok('元に戻すと警告が戻る',await p.locator('[data-staffing-warnings]').count()===1);
+console.log('errs',errs);await br.close();})();

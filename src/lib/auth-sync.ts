@@ -3,7 +3,7 @@ import { templateStorage } from "./template-storage";
 
 const SESSION_KEY = "shift_app_session";
 const API_KEY_KEY = "shift_api_key";
-export interface ShiftLoginEmployee { id: string; name: string; displayName: string; active: boolean; }
+export interface ShiftLoginEmployee { id: string; name: string; displayName: string; active: boolean; hasPin?: boolean; }
 
 export interface ShiftSession {
   token: string;
@@ -55,10 +55,10 @@ export const getEmployeeToken = () => getShiftSession()?.token || "";
 export const getManagementApiKey = () => templateStorage.getItem(API_KEY_KEY) || "";
 export const saveManagementApiKey = (value: string) => templateStorage.setItem(API_KEY_KEY, value.trim());
 
-export async function loginShift(loginId: string, password: string, employeeId: string, employeeName: string): Promise<ShiftSession> {
+export async function loginShift(loginId: string, password: string, employeeId: string, employeeName: string, pin = "", newPin = ""): Promise<ShiftSession> {
   // 一般用・編集者用をフロントから2本同時送信すると、GAS側でセッション保存が競合します。
   // 認証種別の判定はGAS側の loginShift に一本化し、1回の通信でログインします。
-  const json = await call("loginShift", { loginId, password, employeeId, employeeName });
+  const json = await call("loginShift", { loginId, password, employeeId, employeeName, pin, newPin });
   const session = json.session as ShiftSession;
   templateStorage.setItem(SESSION_KEY, JSON.stringify(session));
   return session;

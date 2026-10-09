@@ -60,7 +60,7 @@ import {
   DropdownMenuTrigger 
 } from "@/components/ui/dropdown-menu";
 
-import { AutoDraftSettings, CommentVisibility, Employee, DayShift, ShiftType, GlobalRemark, LeaveRequest, LeaveRequestStatus, LeaveRequestType, PaidLeaveBalance, SpecialDayRule } from "./types";
+import { AutoDraftSettings, CommentVisibility, Employee, DayShift, ShiftType, GlobalRemark, LeaveRequest, LeaveRequestStatus, LeaveRequestType, PaidLeaveBalance, SpecialDayRule, StaffingRules } from "./types";
 import { DEFAULT_CYCLE_PATTERNS, CyclePatterns } from "./constants";
 import { calculateTimes, generateConfiguredDateRange, normalizeShiftInput, finalizeShiftText, resolveCycleShift } from "./lib/shift-utils";
 import { fetchShiftsFromServer, saveMonthToServer, fetchShiftPeriodStatus, saveShiftPeriodStatus, seedSavedBaseline, subscribePending, flushPendingNow, checkPendingOnServer, PendingStatus } from "./lib/shift-sync";
@@ -72,6 +72,13 @@ import { PersonalShiftList } from "./components/PersonalShiftList";
 import { cancelLeaveRequest, deleteLeaveRequest, fetchLeaveRequests, fetchPaidLeaveBalance, savePaidLeaveBalance, submitLeaveRequest, updateLeaveRequestStatus, updateLeaveRequestWorkTime } from "./lib/leave-request-sync";
 import { SpecialDaySettings } from "./components/SpecialDaySettings";
 import { fetchSpecialDayRules, saveSpecialDayRules } from "./lib/special-day-sync";
+import { fetchStaffingRules, saveStaffingRules, EMPTY_STAFFING_RULES } from "./lib/staffing-sync";
+import { checkStaffing, hasAnyStaffingRule } from "./lib/staffing-check";
+import { StaffingRulesSettings } from "./components/StaffingRulesSettings";
+import { AutoPlan } from "./components/AutoAssignDialog";
+import { ShiftWizard } from "./components/ShiftWizard";
+import { BusinessHoursSettings } from "./components/BusinessHoursSettings";
+import { buildAutoAssign, readProfiles } from "./lib/auto-assign";
 import { buildDisplayRemarks, colorForRemark, DEFAULT_SPECIAL_DAY_RULES, withDefaultSpecialDayRules, shouldRestOnDate } from "./lib/special-day-utils";
 import { CalendarPeriodSettings, fetchCalendarPeriodSettings, saveCalendarPeriodSettings } from "./lib/calendar-period-sync";
 import { BoardVisibility, fetchStoreSettings, saveStoreSettings, fetchBoardVisibility, saveBoardVisibility, fetchCorrectionVisibility, saveCorrectionVisibility } from "./lib/store-board-sync";
@@ -140,7 +147,7 @@ export default function App() {
   const [guideOpen, setGuideOpen] = useState(false);
   const [guideSection, setGuideSection] = useState<EmployeeGuideSection>("home");
   const openGuide = (section: EmployeeGuideSection) => { setGuideSection(section); setGuideOpen(true); };
-  const [settingsPage, setSettingsPage] = useState<"menu" | "store" | "board" | "employee" | "shift" | "worktime" | "special" | "operations" | "autodraft" | "other" | "reset">(() => templateStorage.getItem(RESET_PENDING_KEY) ? "reset" : "menu");
+  const [settingsPage, setSettingsPage] = useState<"menu" | "store" | "board" | "employee" | "shift" | "worktime" | "special" | "staffing" | "operations" | "autodraft" | "other" | "reset">(() => templateStorage.getItem(RESET_PENDING_KEY) ? "reset" : "menu");
   const [workTimes, setWorkTimes] = useState(readWorkTimes);
   const [workTimeReady, setWorkTimeReady] = useState(false);
   const [workTimeLoading, setWorkTimeLoading] = useState(true);
@@ -302,6 +309,10 @@ export default function App() {
   const [correctionVisibility, setCorrectionVisibility] = useState<"all" | "private">("all");
   const [specialDayRules, setSpecialDayRules] = useState<SpecialDayRule[]>(DEFAULT_SPECIAL_DAY_RULES);
   const [specialDayLoading, setSpecialDayLoading] = useState(false);
+  const [staffingRules, setStaffingRules] = useState<StaffingRules>(EMPTY_STAFFING_RULES);
+  const [staffingSaving, setStaffingSaving] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [autoUndo, setAutoUndo] = useState<{ count: number; cells: { employeeId: string; date: string; prev?: DayShift }[] } | null>(null);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [managementApiKey, setManagementApiKey] = useState(() => getManagementApiKey());
   const [apiKeyVerified, setApiKeyVerified] = useState(() => templateStorage.getItem("api_key_verified") === "1" && !!getManagementApiKey());
@@ -346,6 +357,13 @@ export default function App() {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [syncState]);
+
+  useEffect(() => {
+    if (!appSession?.token) return;
+    let cancelled = false;
+    fetchStaffingRules().then(rules => { if (!cancelled) setStaffingRules(rules); }).catch(error => console.error("人数の設定の取得に失敗しました", error));
+    return () => { cancelled = true; };
+  }, [appSession?.token]);
 
   useEffect(() => {
     if (!appSession?.token) return;
@@ -903,6 +921,9 @@ export default function App() {
   );
   const outputPeriods = activeTab === "home" ? homeOutputPeriods : [dateRange];
   const dashboardEmployees = sortEmployeesForDisplay(employees);
+  const staffingWarnings = hasAnyStaffingRule(staffingRules)
+    ? checkStaffing({ dates: dateRange, employees: dashboardEmployees, rules: staffingRules, roleNames: Object.fromEntries(roles.map(role => [role.id, role.name])), specialDayRules })
+    : null;
   const operatorEmployee = dashboardEmployees.find(item => item.id === appSession?.employeeId || (item.displayName || item.name) === operatorName);
   const masterLoginEmployees = employeeMaster.filter(item => !PLACEHOLDER_EMPLOYEE_PATTERN.test(item.displayName || item.name));
   const cachedLoginEmployees = employees.filter(item => !PLACEHOLDER_EMPLOYEE_PATTERN.test(item.displayName || item.name));
@@ -1017,6 +1038,17 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appSession?.role, autoDraftSettings.enabled, autoDraftSettings.started, currentMonthKey]);
 
+  const handleSaveStaffingRules = async (rules: StaffingRules) => {
+    setStaffingSaving(true);
+    try {
+      setStaffingRules(await saveStaffingRules(rules));
+      toast.success("人数・連勤の設定を保存しました");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "人数の設定を保存できませんでした");
+    } finally {
+      setStaffingSaving(false);
+    }
+  };
   const handleSaveSpecialDayRules = async (rules: SpecialDayRule[]) => {
     setSpecialDayLoading(true);
     try {
@@ -1150,6 +1182,52 @@ export default function App() {
       return { ...employee, shifts: existing ? employee.shifts.map(item => item.date === updated.date ? updated : item) : [...employee.shifts, updated] };
     }));
     setOverviewCell(null);
+  };
+
+  const makeAutoPlan = (rules: StaffingRules): AutoPlan => {
+    const roleNames = Object.fromEntries(roles.map(role => [role.id, role.name]));
+    const result = buildAutoAssign({ dates: dateRange, employees: dashboardEmployees, rules, specialDayRules, leaveRequests, roleNames, defaultShift: visibleWorkTimes[0] || "9:00～18:00" });
+    const count = (list: Employee[]) => checkStaffing({ dates: dateRange, employees: list, rules, roleNames, specialDayRules }).list.length;
+    const applied = dashboardEmployees.map(emp => {
+      const mine = result.changes.filter(change => change.employeeId === emp.id);
+      const shifts = emp.shifts.map(item => { const change = mine.find(c => item.date.startsWith(c.date)); return change ? { ...item, shift: change.shift } : item; });
+      const extra = mine.filter(c => !emp.shifts.some(item => item.date.startsWith(c.date))).map(c => ({ date: c.date, shift: c.shift, breakTime: "", workTime: "", comment: "" }));
+      return { ...emp, shifts: [...shifts, ...extra] };
+    });
+    return { result, before: count(dashboardEmployees), after: count(applied), names: Object.fromEntries(dashboardEmployees.map(emp => [emp.id, emp.displayName || emp.name])), labels: Object.fromEntries(dateRange.map(d => [getDateStr(d), format(d, "M/d（E）", { locale: ja })])) };
+  };
+  const applyAutoPlan = (autoPlan: AutoPlan, rules: StaffingRules, saveRules: boolean) => {
+    if (isLocked || periodStatusLoading || appSession?.role !== "admin") return;
+    const changes = autoPlan.result.changes;
+    const cells = changes.map(change => ({ employeeId: change.employeeId, date: change.date, prev: employees.find(emp => emp.id === change.employeeId)?.shifts.find(item => item.date === change.date) }));
+    setEmployees(previous => previous.map(employee => {
+      const mine = changes.filter(change => change.employeeId === employee.id);
+      if (!mine.length) return employee;
+      let shifts = [...employee.shifts];
+      mine.forEach(change => {
+        const existing = shifts.find(item => item.date === change.date);
+        const updated: DayShift = { ...existing, date: change.date, shift: change.shift, ...calculateTimes(change.shift), comment: existing?.comment || "" };
+        shifts = existing ? shifts.map(item => item.date === change.date ? updated : item) : [...shifts, updated];
+      });
+      return { ...employee, shifts };
+    }));
+    setAutoUndo({ count: changes.length, cells });
+    setWizardOpen(false);
+    toast.success(`${changes.length}か所に出勤を入れました。自動で保存されます`);
+    if (saveRules) void handleSaveStaffingRules(rules);
+  };
+  const undoAutoPlan = () => {
+    if (!autoUndo || isLocked) return;
+    const { cells } = autoUndo;
+    setEmployees(previous => previous.map(employee => {
+      const mine = cells.filter(cell => cell.employeeId === employee.id);
+      if (!mine.length) return employee;
+      let shifts = [...employee.shifts];
+      mine.forEach(cell => { shifts = cell.prev ? shifts.map(item => item.date === cell.date ? cell.prev! : item) : shifts.filter(item => item.date !== cell.date); });
+      return { ...employee, shifts };
+    }));
+    setAutoUndo(null);
+    toast.success("入れた出勤を元に戻しました");
   };
 
   const handleShiftChange = (employeeId: string, date: string, shift: ShiftType | "none") => {
@@ -2174,6 +2252,12 @@ export default function App() {
                     </dialog>
                     {correctionPopup && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4" onClick={() => setCorrectionPopup(null)}><div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl" onClick={event => event.stopPropagation()}><h3 className="text-lg font-black text-red-700">訂正依頼</h3><p className="mt-2 text-sm font-bold">{correctionPopup.request.employeeName}　{correctionPopup.request.date ? format(new Date(`${correctionPopup.request.date}T00:00:00`), "M/d（E）", { locale: ja }) : ""}</p><div className="mt-3 rounded-xl bg-slate-100 p-3 text-sm"><span className="text-xs font-bold text-slate-500">現在の勤務</span><p className="font-black">{correctionPopup.shiftText}</p></div><div className="mt-2 rounded-xl bg-red-50 p-3 text-sm"><span className="text-xs font-bold text-red-700">依頼内容</span><p className="whitespace-pre-wrap font-bold">{correctionPopup.request.comment || "（コメントなし）"}</p></div><p className="mt-3 text-xs text-slate-600">返事が必要なら「管理者からのお知らせ」で本人を指定して送れます。</p><div className="mt-4 grid grid-cols-2 gap-2"><Button variant="outline" onClick={() => setCorrectionPopup(null)}>閉じる</Button>{appSession.role === "admin" && <Button className="bg-red-600 hover:bg-red-700" onClick={async () => { const target = correctionPopup.request; try { const saved = await updateLeaveRequestStatus(target.id, "対応済み"); setLeaveRequests(prev => prev.map(r => r.id === saved.id ? saved : r)); setHomePendingCorrections(prev => prev.filter(r => r.id !== saved.id)); setCorrectionPopup(null); toast.success("確認しました"); } catch (error) { toast.error(error instanceof Error ? error.message : "更新できませんでした"); } }}>確認した</Button>}</div></div></div>}
                     {isFromAdmin && showLeaveManager && <LeaveRequestManager requests={leaveRequests} loading={leaveRequestLoading} onStatusChange={handleLeaveRequestStatus} onDelete={handleLeaveRequestDelete} />}
+                    {inCreation && overviewEditing && !isLocked && <div className="rounded-xl border-2 border-blue-200 bg-blue-50 p-3" data-auto-assign-bar>
+                      <div className="flex flex-wrap items-center gap-2"><Button type="button" className="h-11 font-bold" disabled={periodStatusLoading} onClick={() => setWizardOpen(true)} data-wizard-open><Wand2 className="mr-2 h-4 w-4" />質問に答えてシフト案を作る</Button>{autoUndo && <Button type="button" variant="outline" className="h-11 font-bold" onClick={undoAutoPlan} data-auto-assign-undo>さっき入れた{autoUndo.count}か所を元に戻す</Button>}</div>
+                      <p className="mt-2 text-xs leading-6 text-blue-900">いくつかの質問（最低人数・連勤など）に答えると、「こんなシフトになります」と言葉で確認してから、足りない日に出勤を足す案を作ります。使うかどうかは、案を見てから選べます。今入っている勤務は変えません。</p>
+                    </div>}
+                    {wizardOpen && <ShiftWizard rules={staffingRules} roles={roles} employees={dashboardEmployees} periodLabel={`${format(dateRange[0], "M/d")}〜${format(dateRange[dateRange.length - 1], "M/d")}`} leaveCount={leaveRequests.filter(item => ["申請中", "承認", "対応済み"].includes(item.status) && ["有給希望", "休み希望", "午前休希望", "午後休希望"].includes(item.type) && dateRange.some(d => getDateStr(d) === item.date)).length} profiles={readProfiles({ dates: dateRange, employees: dashboardEmployees, specialDayRules })} makePlan={makeAutoPlan} displayShift={value => displayShift(value, workTimes, shiftDisplayMode)} onApply={applyAutoPlan} onClose={() => setWizardOpen(false)} />}
+                    {staffingWarnings && staffingWarnings.list.length > 0 && appSession.role === "admin" && <details data-staffing-warnings className="rounded-xl border-2 border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><summary className="cursor-pointer font-bold">⚠ 確認が必要なところが{staffingWarnings.list.length}件あります（押すと一覧）</summary><ul className="mt-2 list-disc space-y-1 pl-5 text-xs">{staffingWarnings.list.map((line, index) => <li key={index}>{line}</li>)}</ul><p className="mt-2 text-[11px] text-amber-800">基準は「設定 → シフトマスタ → 人数・連勤のチェック」で変えられます。</p></details>}
                     <div className="dashboard-table-wrap overflow-x-auto" onScroll={event => { const el = event.currentTarget; if (window.innerWidth < 768 && el.scrollTop > 0 && el.getBoundingClientRect().top > 8) el.scrollIntoView({ block: "start" }); }}>
                       <Table className="dashboard-table text-[13px]">
                         <TableHeader>
@@ -2211,7 +2295,7 @@ export default function App() {
                                   const shiftText = displayShift(actualShiftText, workTimes, shiftDisplayMode);
                                   const compactParts = shiftText.includes("～") ? shiftText.split("～") : [shiftText];
                                   return (
-                                    <TableCell key={emp.id} className={`dashboard-employee-cell py-1 px-1 border-r border-border ${leaveRequest ? "has-leave-request" : ""}`} title={`${actualShiftText}${leaveRequest ? `・${leaveRequest.type}${leaveRequest.desiredWorkStart && leaveRequest.desiredWorkEnd ? ` ${leaveRequest.desiredWorkStart}〜${leaveRequest.desiredWorkEnd}` : ""}（${leaveRequest.status}）` : ""}`}>
+                                    <TableCell key={emp.id} className={`dashboard-employee-cell py-1 px-1 border-r border-border ${leaveRequest ? "has-leave-request" : ""} ${appSession.role === "admin" && staffingWarnings?.byCell[`${emp.id}|${dateStr}`] ? "ring-2 ring-inset ring-amber-400" : ""}`} data-staffing-cell={appSession.role === "admin" ? staffingWarnings?.byCell[`${emp.id}|${dateStr}`]?.join("／") : undefined} title={`${staffingWarnings?.byCell[`${emp.id}|${dateStr}`] && appSession.role === "admin" ? `⚠ ${staffingWarnings.byCell[`${emp.id}|${dateStr}`].join("／")}　` : ""}${actualShiftText}${leaveRequest ? `・${leaveRequest.type}${leaveRequest.desiredWorkStart && leaveRequest.desiredWorkEnd ? ` ${leaveRequest.desiredWorkStart}〜${leaveRequest.desiredWorkEnd}` : ""}（${leaveRequest.status}）` : ""}`}>
                                       <button type="button" disabled={!isFromAdmin || !overviewEditing || isLocked || periodStatusLoading || appSession.role !== "admin"} onClick={() => openOverviewCell(emp, dateStr)} aria-label={`${emp.displayName || emp.name} ${format(date, "M月d日")} ${actualShiftText || (s?.shift === "休み" ? "休み" : "なし")}の勤務を変更`} className={`w-full min-h-9 text-[12px] py-1.5 rounded-sm disabled:cursor-default enabled:cursor-pointer enabled:ring-1 enabled:ring-amber-500 enabled:bg-amber-50 enabled:hover:bg-amber-100 enabled:focus-visible:outline-2 enabled:focus-visible:outline-amber-600 text-center font-bold leading-none ${
                                         s?.shift === "有休" 
                                           ? "bg-red-100 text-red-800 border border-red-200" 
@@ -2231,7 +2315,7 @@ export default function App() {
                                     </TableCell>
                                   );
                                 })}
-                                <TableCell className="dashboard-remarks-col dashboard-band-name py-2 border-r border-border">{gr?.type || ""}</TableCell>
+                                <TableCell className="dashboard-remarks-col dashboard-band-name py-2 border-r border-border">{gr?.type || ""}{appSession.role === "admin" && staffingWarnings?.byDate[dateStr] && <span data-staffing-date className="ml-1 text-[11px] font-bold text-amber-700" title={staffingWarnings.byDate[dateStr].join("／")}>⚠ {staffingWarnings.byDate[dateStr].join("／")}</span>}</TableCell>
                               </TableRow>
                             );
                           })}
@@ -2311,7 +2395,7 @@ export default function App() {
               <TemplateResetSettings onBack={() => goSettings("menu")} onProgress={setResetProgress} />
             ) : activeTab === "admin" && settingsPage === "store" ? (
               <motion.div key="settings-store" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
-                <SettingsHead title="店舗マスタ" description="店舗全体の基本ルール" backLabel="設定へ戻る" onBack={() => goSettings("menu")} /><Card><CardContent className="p-6 space-y-5"><StoreMasterSettings master={storeMaster} onMasterChange={setStoreMaster} period={calendarPeriodSettings} periodDraft={calendarPeriodDraft} saving={calendarPeriodSaving} onPeriodDraftChange={setCalendarPeriodDraft} onSavePeriod={handleSaveCalendarPeriod} onSaveStore={async settings => { const saved = await saveStoreSettings(settings); markSetupSeen("store-saved"); setStoreMaster(current => { const next = { ...current, ...saved }; templateStorage.setItem("store_master_settings", JSON.stringify(next)); return next; }); }} onOpenBandSettings={() => goSettings("special")} /></CardContent></Card>
+                <SettingsHead title="店舗マスタ" description="店舗全体の基本ルール" backLabel="設定へ戻る" onBack={() => goSettings("menu")} /><Card><CardContent className="p-6 space-y-5"><StoreMasterSettings master={storeMaster} onMasterChange={setStoreMaster} period={calendarPeriodSettings} periodDraft={calendarPeriodDraft} saving={calendarPeriodSaving} onPeriodDraftChange={setCalendarPeriodDraft} onSavePeriod={handleSaveCalendarPeriod} onSaveStore={async settings => { const saved = await saveStoreSettings(settings); markSetupSeen("store-saved"); setStoreMaster(current => { const next = { ...current, ...saved }; templateStorage.setItem("store_master_settings", JSON.stringify(next)); return next; }); }} onOpenBandSettings={() => goSettings("special")} /><BusinessHoursSettings rules={staffingRules} roles={roles} saving={staffingSaving} onSave={handleSaveStaffingRules} /></CardContent></Card>
               </motion.div>
             ) : activeTab === "admin" && settingsPage === "board" ? (
               <motion.div key="settings-board" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
@@ -2325,6 +2409,7 @@ export default function App() {
                   { key: "worktime", icon: Clock, title: "勤務時間設定", description: "早番・遅番などの時間と略称" },
                   { key: "autodraft", icon: Wand2, title: "シフト案自動作成マスタ", description: "シフト案を自動で作る条件" },
                   { key: "operations", icon: Repeat, title: "勤務パターン作成マスタ", description: "1〜4週間の勤務パターン" },
+                  { key: "staffing", icon: Users, title: "人数・連勤のチェック", description: "最低人数・連勤の上限・1人ごとの条件" },
                   { key: "special", icon: Palette, title: "お店のお休みの日・色付け", description: "定休日・祝日・年末年始・毎月○日など" },
                 ].map(item => <button key={item.key} type="button" onClick={() => goSettings(item.key as typeof settingsPage)} className="group flex min-h-24 items-center gap-4 rounded-2xl border-2 border-slate-100 bg-white p-5 text-left shadow-sm transition hover:border-slate-300 hover:bg-slate-50"><span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-700"><item.icon className="h-6 w-6" /></span><span><strong className="flex items-center gap-2 text-base text-slate-900">{item.title}<ChevronRight className="h-4 w-4 transition group-hover:translate-x-1" /></strong><small className="mt-1 block leading-relaxed text-slate-500">{item.description}</small></span></button>)}</div>
               </motion.div>
@@ -2332,6 +2417,8 @@ export default function App() {
               <motion.div key="settings-worktime" className="space-y-4"><SettingsHead title="勤務時間設定" description="シフトで使う勤務時間パターン" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><Card><CardContent className="p-5 sm:p-6"><ToolHelp title="勤務時間設定って何？"><p>シフトの入力で選べる「勤務時間」の候補を登録します。例：9:00〜18:00（早番）。</p><p>追加・変更は、押したその場で自動的に保存されます（保存ボタンはありません）。登録しなくても「休み」「有休」「任意入力」はいつでも選べます。</p><p>夜勤など日をまたぐ勤務は、退勤の時刻を出勤より早く入れると自動で判定されます。</p></ToolHelp><WorkTimeSettings values={workTimes} ready={workTimeReady} loading={workTimeLoading} onPendingChange={setWorkTimePending} confirmed={setupSeen.includes("worktime-confirmed")} onConfirm={() => { markSetupSeen("worktime-confirmed"); toast.success("勤務時間は、このままで使います"); }} onSave={async values => { markSetupSeen("worktime-confirmed"); const master = await saveWorkTimeMaster(values, workTimeRevision); saveWorkTimes(master.items); setWorkTimes(master.items); setWorkTimeRevision(master.revision); toast.success("勤務時間設定を共通保存しました"); }} /></CardContent></Card></motion.div>
             ) : activeTab === "admin" && settingsPage === "autodraft" ? (
               <motion.div key="settings-autodraft" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4"><SettingsHead title="シフト案自動作成マスタ" description="シフト案を自動で作る条件" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><ToolHelp title="シフト案の自動作成って何？"><p>勤務パターンを割り当てた人について、先の月のシフト案を自動で作る機能です。勤務パターンを使っていないお店は、OFFのままで大丈夫です。</p><p>確定したシフトや、手で直した勤務は上書きしません。</p></ToolHelp><AutoDraftSettingsView settings={autoDraftSettings} onChange={value => void updateAutoDraftSettings(value)} onStart={() => startAutoDraft()} run={autoDraftRun} rangeLabel={autoDraftRangeLabel} /></motion.div>
+            ) : activeTab === "admin" && settingsPage === "staffing" ? (
+              <motion.div key="settings-staffing" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4"><SettingsHead title="人数・連勤のチェック" description="足りない日や連勤をシフト表で知らせる基準" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><ToolHelp title="これは何？"><p>シフトを自動で変える設定ではありません。決めた基準に合わないところを、シフト表で「⚠」と知らせるだけです。</p><p>空欄や「0」の項目はチェックしません。決めたものだけ働きます。</p></ToolHelp><StaffingRulesSettings rules={staffingRules} employees={employeeMaster} roles={roles} saving={staffingSaving} onSave={handleSaveStaffingRules} /></motion.div>
             ) : activeTab === "admin" && settingsPage === "special" ? (
               <motion.div key="settings-special" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
                 <SettingsHead title="お店のお休みの日・色付け" description="定休日・祝日・年末年始・毎月○日などを決める" backLabel="設定へ戻る" onBack={() => goSettings("menu")} /><Card><CardContent className="p-6"><div className="mb-4"><ToolHelp title="お休みの日・色付けって何？" defaultOpen><p>お店の休みの日を決めます。決めた日は、カレンダーやシフト表に色が付きます（初期は日曜と祝日が赤）。</p><p>「毎週の定休日」＝曜日で決まる休み／「お休みの日を追加」＝第○曜日・毎月○日・毎年同じ日・今年だけの日付。</p><p>色だけでなく、シフト案の自動作成で「その日を休みにする」こともできます。変更したら一番下の「保存」を押してください。</p></ToolHelp></div><SpecialDaySettings rules={specialDayRules} employees={employeeMaster} loading={specialDayLoading} onSave={handleSaveSpecialDayRules} /></CardContent></Card>

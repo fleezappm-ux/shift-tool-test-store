@@ -47,6 +47,11 @@ export async function saveEmployeeMaster(employees: EmployeeMasterItem[]): Promi
   return Array.isArray(json.employees) ? json.employees : employees;
 }
 
+// 従業員のPINを消します（本人は次のログインで決め直します）。管理者ログイン＋接続キーが必要です。
+export async function resetEmployeePin(employeeId: string): Promise<void> {
+  await call("resetShiftEmployeePin", { employeeId, shiftApiKey: getManagementApiKey() });
+}
+
 export async function fetchShiftRoles(): Promise<ShiftRole[]> {
   const json = await call("getShiftRoleMaster");
   return Array.isArray(json.roles) ? json.roles : DEFAULT_ROLES;

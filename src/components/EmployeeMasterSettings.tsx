@@ -1,15 +1,24 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, Plus, Save, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, KeyRound, Plus, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { EmployeeMasterItem, ShiftRole } from "../lib/employee-master-sync";
+import { EmployeeMasterItem, ShiftRole, resetEmployeePin } from "../lib/employee-master-sync";
 import { SaveStatus } from "./SaveStatus";
 import { useUnsavedGuard } from "../lib/unsaved";
 
 export function EmployeeMasterSettings({ employees, roles, onSave, operatorId, loadError = "" }: { employees: EmployeeMasterItem[]; roles: ShiftRole[]; onSave: (items: EmployeeMasterItem[]) => Promise<EmployeeMasterItem[] | void>; operatorId?: string; loadError?: string }) {
   const [drafts, setDrafts] = useState(employees);
   const [saving, setSaving] = useState(false);
+  const [pinResetting, setPinResetting] = useState("");
+  const resetPin = async (item: EmployeeMasterItem) => {
+    const label = item.displayName || item.name;
+    if (!window.confirm(`「${label}」のPINをリセットしますか？\n本人は、次にログインするときに新しいPINを決めます。`)) return;
+    setPinResetting(item.id);
+    try { await resetEmployeePin(item.id); toast.success(`${label}のPINをリセットしました。本人に「次のログインで新しいPINを決めてください」と伝えてください`); }
+    catch (error) { toast.error(error instanceof Error ? error.message : "PINをリセットできませんでした"); }
+    finally { setPinResetting(""); }
+  };
   const signature = (items: EmployeeMasterItem[]) => JSON.stringify(items.map((item, index) => [item.id, item.name.trim(), item.roleId || item.role || "", item.active, index, (item.aliases || []).length]));
   const syncedRef = useRef(employees);
   const [newerFromServer, setNewerFromServer] = useState<EmployeeMasterItem[] | null>(null);
@@ -74,6 +83,11 @@ export function EmployeeMasterSettings({ employees, roles, onSave, operatorId, l
       <select className="h-10 rounded-md border bg-white px-3 text-sm" value={item.roleId || roles.find(role => role.name === item.role)?.id || ""} onChange={event => { const role = roles.find(candidate => candidate.id === event.target.value); update(item.id, { roleId: role?.id || "", role: role?.name || "" }); }}><option value="">役職を選択</option>{roles.map(role => <option key={role.id} value={role.id}>{role.name}</option>)}</select>
       <div className="flex gap-1"><Button variant="outline" size="icon" aria-label="上へ移動" disabled={index === 0} onClick={() => move(drafts.indexOf(item), -1)}><ArrowUp className="h-4 w-4" /></Button><Button variant="outline" size="icon" aria-label="下へ移動" disabled={index === activeDrafts.length - 1} onClick={() => move(drafts.indexOf(item), 1)}><ArrowDown className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="text-red-600" aria-label="削除" onClick={() => remove(item.id)}><Trash2 className="h-4 w-4" /></Button></div>
     </div>)}</div>
+    <details className="rounded-xl border border-slate-200 bg-white p-4" data-pin-reset>
+      <summary className="cursor-pointer text-sm font-black text-slate-900"><KeyRound className="mr-1 inline h-4 w-4" />PIN（暗証番号）のリセット</summary>
+      <p className="mt-2 text-xs leading-5 text-slate-600">ログインのとき、操作員ごとに4〜6桁のPINを入れます。PINを忘れた人は、ここでリセットします。本人は次のログインで、新しいPINを決め直します（管理者にもPINは見えません）。</p>
+      <ul className="mt-3 space-y-2">{activeDrafts.filter(item => item.name.trim()).map(item => <li key={item.id} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 text-sm"><span className="min-w-0 truncate font-bold">{item.displayName || item.name}</span><Button type="button" size="sm" variant="outline" className="min-h-10 shrink-0" disabled={pinResetting === item.id} onClick={() => void resetPin(item)}>{pinResetting === item.id ? "処理中…" : "PINをリセット"}</Button></li>)}</ul>
+    </details>
     {activeDrafts.some(item => (item.aliases || []).length > 0) && <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600">古い名前の記録（別名）が残っている人がいます。名前を変える前の呼び名を覚えておくためのもので、入力途中の文字などのゴミが混ざることがあります。<Button type="button" size="sm" variant="outline" className="ml-2" onClick={() => { setDrafts(items => items.map(item => ({ ...item, aliases: [] }))); toast.success("別名を空にしました。下の「保存」を押すと確定します"); }}>別名をすべて削除する</Button></div>}
     {loadError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-xs font-bold text-red-700">{loadError}</p>}
     {newerFromServer && <div role="alert" className="rounded-lg bg-amber-50 p-3 text-xs font-bold text-amber-900">他の端末で従業員が更新されました。このまま保存すると失敗します。<Button size="sm" variant="outline" className="ml-2" onClick={() => { syncedRef.current = newerFromServer; setDrafts(newerFromServer); setNewerFromServer(null); }}>最新を読み込む（入力中の変更は消えます）</Button></div>}

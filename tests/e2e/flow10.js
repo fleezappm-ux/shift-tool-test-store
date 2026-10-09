@@ -14,7 +14,7 @@ await p.route('https://script.google.com/**',async r=>{let b={};try{b=JSON.parse
  r.fulfill({status:200,contentType:'application/json',headers:H,body:JSON.stringify(out)});});
 await p.goto('http://127.0.0.1:5199/',{waitUntil:'networkidle'});await p.waitForTimeout(800);
 await p.locator('input').first().fill('admin');await p.locator('input[type=password]').fill('pw');
-await p.locator('select').selectOption('df38');await p.getByRole('button',{name:'ログイン'}).click();await p.waitForTimeout(800);
+await p.locator('select').selectOption('df38');await p.locator('#login-pin').fill('1234');await p.getByRole('button',{name:'ログイン'}).click();await p.waitForTimeout(800);
 console.log('key step shown',await p.getByText('管理者用の接続キーを入れてください').count());
 await p.getByPlaceholder('管理者用の接続キー').fill('wrong');await p.getByRole('button',{name:'保存して始める'}).click();await p.waitForTimeout(600);
 console.log('wrong key msg',await p.getByText('接続キーが違います').count());

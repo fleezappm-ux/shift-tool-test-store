@@ -40,7 +40,7 @@ function dispatchShiftAction_(data) {
     // 公開ログイン操作以外は、ルーティング時に必ずセッションを検証する。
     // 各関数内の本人・接続キー・管理者チェックも引き続き適用する。
     var publicActions = ["loginShift", "getShiftLoginEmployees", "getShiftResetEpoch"];
-    var adminActions = ["previewTemplateReset", "getTemplateResetStatus", "runTemplateReset", "clearTemplateShiftRemarks", "saveShiftEmployeeMaster", "saveShiftRoleMaster", "saveShiftHomeLayout", "saveShiftAdminNotice", "deleteShiftAdminNotice", "saveShiftAdminNoticeVisibility", "saveShiftWorkTimeMaster", "saveShiftCycleMaster", "saveShiftAutoDraftSettings", "saveShiftStoreBoardVisibility", "saveShiftCorrectionVisibility", "updateShiftLeaveRequestStatus", "deleteShiftLeaveRequest", "saveShiftSpecialDayRules", "saveShiftCalendarPeriodSettings", "saveShiftPeriodStatus", "saveShiftStoreSettings", "checkShiftApiKey", "saveShiftMonth", "flushShiftPending", "getShiftErrorLog", "clearShiftErrorLog"];
+    var adminActions = ["previewTemplateReset", "getTemplateResetStatus", "runTemplateReset", "clearTemplateShiftRemarks", "saveShiftEmployeeMaster", "resetShiftEmployeePin", "saveShiftRoleMaster", "saveShiftHomeLayout", "saveShiftAdminNotice", "deleteShiftAdminNotice", "saveShiftAdminNoticeVisibility", "saveShiftWorkTimeMaster", "saveShiftCycleMaster", "saveShiftAutoDraftSettings", "saveShiftStoreBoardVisibility", "saveShiftCorrectionVisibility", "updateShiftLeaveRequestStatus", "deleteShiftLeaveRequest", "saveShiftSpecialDayRules", "saveShiftStaffingRules", "saveShiftCalendarPeriodSettings", "saveShiftPeriodStatus", "saveShiftStoreSettings", "checkShiftApiKey", "saveShiftMonth", "flushShiftPending", "getShiftErrorLog", "clearShiftErrorLog"];
     if (publicActions.indexOf(data.action) < 0) requireShiftSession(data.sessionToken, adminActions.indexOf(data.action) >= 0 ? "admin" : null);
     if (data.action === "previewTemplateReset") return previewTemplateReset(data);
     if (data.action === "getTemplateResetStatus") return getTemplateResetStatus(data);
@@ -55,6 +55,7 @@ function dispatchShiftAction_(data) {
     if (data.action === "getShiftLoginEmployees") return getShiftLoginEmployees(data);
     if (data.action === "getShiftEmployeeMaster") return getShiftEmployeeMaster(data);
     if (data.action === "saveShiftEmployeeMaster") return saveShiftEmployeeMaster(data);
+    if (data.action === "resetShiftEmployeePin") return resetShiftEmployeePin(data);
     if (data.action === "getShiftRoleMaster") return getShiftRoleMaster(data);
     if (data.action === "saveShiftRoleMaster") return saveShiftRoleMaster(data);
     if (data.action === "getShiftHomeLayout") return getShiftHomeLayout(data);
@@ -85,6 +86,8 @@ function dispatchShiftAction_(data) {
     if (data.action === "deleteShiftLeaveRequest") return deleteShiftLeaveRequest(data);
     if (data.action === "getShiftSpecialDayRules") return getShiftSpecialDayRules(data);
     if (data.action === "saveShiftSpecialDayRules") return saveShiftSpecialDayRules(data);
+    if (data.action === "getShiftStaffingRules") return getShiftStaffingRules(data);
+    if (data.action === "saveShiftStaffingRules") return saveShiftStaffingRules(data);
     if (data.action === "getShiftCalendarPeriodSettings") return getShiftCalendarPeriodSettings(data);
     if (data.action === "saveShiftCalendarPeriodSettings") return saveShiftCalendarPeriodSettings(data);
     if (data.action === "getShiftPeriodStatus") return getShiftPeriodStatus(data);
@@ -883,7 +886,8 @@ function readShiftEmployeeMaster() {
 
 function getShiftLoginEmployees() {
   try {
-    var employees = normalizeShiftEmployeeMaster(readShiftEmployeeMaster()).filter(function(item) { var label = item.displayName || item.name || ""; return item.active && !/^従業員[A-EＡ-Ｅ]$/.test(label); }).map(function(item) { return { id: item.id, name: item.name, displayName: item.displayName, active: item.active }; });
+    var pinProps = PropertiesService.getScriptProperties().getProperties();
+    var employees = normalizeShiftEmployeeMaster(readShiftEmployeeMaster()).filter(function(item) { var label = item.displayName || item.name || ""; return item.active && !/^従業員[A-EＡ-Ｅ]$/.test(label); }).map(function(item) { return { id: item.id, name: item.name, displayName: item.displayName, active: item.active, hasPin: !!pinProps[shiftPinPropertyKey_(item.id)] }; });
     return createJsonDataResponse({ success: true, employees: employees });
   } catch (error) { return createJsonResponse(false, "操作員一覧を取得できませんでした。"); }
 }
@@ -1234,6 +1238,78 @@ function shiftConstantTimeEquals_(a, b) {
   return diff === 0;
 }
 
+/** 操作員ごとのPIN（4〜6桁の数字）。他の従業員が名前だけ選んで、なりすますのを防ぎます。
+ *  保存するのは「塩＋ハッシュ」だけで、PINそのものは保存しません。 */
+var SHIFT_PIN_MAX_FAILURES_ = 5;
+var SHIFT_PIN_WINDOW_SECONDS_ = 600;
+
+function isValidShiftPin_(pin) { return /^[0-9]{4,6}$/.test(String(pin == null ? "" : pin)); }
+
+function shiftPinPropertyKey_(operatorId) {
+  return "SHIFT_PIN_" + shiftAuthHash(String(operatorId || ""), "pin-key").slice(0, 32);
+}
+
+function shiftPinThrottleKey_(operatorId) {
+  return "shift_pin_fail_" + shiftAuthHash(String(operatorId || ""), "pin-throttle").slice(0, 40);
+}
+
+function assertShiftPinAllowed_(operatorId) {
+  var cache = getShiftLoginCache_();
+  if (!cache) return;
+  if (Number(cache.get(shiftPinThrottleKey_(operatorId)) || 0) >= SHIFT_PIN_MAX_FAILURES_) throw new Error("PINの入力に失敗した回数が多すぎます。10分ほど待ってから、もう一度お試しください。急ぐときは管理者に相談してください。");
+}
+
+function recordShiftPinFailure_(operatorId) {
+  var cache = getShiftLoginCache_();
+  if (!cache) return;
+  var key = shiftPinThrottleKey_(operatorId);
+  cache.put(key, String(Number(cache.get(key) || 0) + 1), SHIFT_PIN_WINDOW_SECONDS_);
+}
+
+function shiftPinHash_(operatorId, pin, salt) { return shiftAuthHash(String(operatorId) + ":" + String(pin), salt); }
+
+/** PINを確かめます。まだ決めていない人は、newPin で初回登録します。失敗すると例外。 */
+function verifyOrRegisterShiftPin_(operatorId, pin, newPin) {
+  var p = PropertiesService.getScriptProperties();
+  var key = shiftPinPropertyKey_(operatorId);
+  var raw = p.getProperty(key);
+  if (raw) {
+    assertShiftPinAllowed_(operatorId);
+    var record = {};
+    try { record = JSON.parse(raw); } catch (_) { record = {}; }
+    if (!isValidShiftPin_(pin) || !record.s || !record.h || !shiftConstantTimeEquals_(shiftPinHash_(operatorId, pin, record.s), record.h)) {
+      recordShiftPinFailure_(operatorId);
+      throw new Error("PINが違います。忘れたときは管理者にPINのリセットを頼んでください。");
+    }
+    var cache = getShiftLoginCache_();
+    if (cache) cache.remove(shiftPinThrottleKey_(operatorId));
+    return;
+  }
+  if (!isValidShiftPin_(newPin)) throw new Error("PIN_SETUP_REQUIRED:はじめてのログインです。4〜6桁の数字でPINを決めてください。");
+  withShiftLock_(function() {
+    if (p.getProperty(key)) throw new Error("ほかの端末で先にPINが決められました。もう一度ログインして、そのPINを入れてください。");
+    var salt = Utilities.getUuid();
+    p.setProperty(key, JSON.stringify({ s: salt, h: shiftPinHash_(operatorId, newPin, salt) }));
+  });
+}
+
+/** 管理者が、従業員のPINを消します。本人は次のログインで、新しいPINを決め直します。 */
+function resetShiftEmployeePin(data) {
+  try {
+    requireShiftSession(data.sessionToken, "admin"); verifyShiftApiKey(data.shiftApiKey);
+    var employeeId = sanitizeText(data.employeeId, 100).trim();
+    if (!employeeId) throw new Error("従業員を選んでください。");
+    var master = normalizeShiftEmployeeMaster(readShiftEmployeeMaster());
+    var target = master.filter(function(item) { return item.id === employeeId; })[0];
+    if (!target) throw new Error("従業員マスターに見つかりません。");
+    PropertiesService.getScriptProperties().deleteProperty(shiftPinPropertyKey_(employeeId));
+    var cache = getShiftLoginCache_();
+    if (cache) cache.remove(shiftPinThrottleKey_(employeeId));
+    appendShiftAudit(data, "PINリセット", "従業員:" + (target.displayName || target.name), null, null);
+    return createJsonDataResponse({ success: true });
+  } catch (error) { return createJsonResponse(false, error.message || "PINをリセットできませんでした。"); }
+}
+
 function loginShift(data) {
   try {
     var p = PropertiesService.getScriptProperties();
@@ -1263,12 +1339,14 @@ function loginShift(data) {
     if (adminId && loginId === adminId) {
       if (!adminSalt || !adminHash) throw new Error("管理者ログインがまだGAS側で初期設定されていません。");
       if (!shiftConstantTimeEquals_(shiftAuthHash(password, adminSalt), adminHash)) { recordShiftLoginFailure_(loginId); throw new Error("ログインIDまたはパスワードが違います。"); }
+      verifyOrRegisterShiftPin_(operatorId, data.pin, data.newPin);
       clearShiftLoginFailures_(loginId);
       return createJsonDataResponse({ success: true, session: createShiftSession("admin", operatorName, operatorId) });
     }
     if (employeeId && loginId === employeeId) {
       if (!employeeSalt || !employeeHash) throw new Error("従業員ログインがまだGAS側で初期設定されていません。");
       if (!shiftConstantTimeEquals_(shiftAuthHash(password, employeeSalt), employeeHash)) { recordShiftLoginFailure_(loginId); throw new Error("ログインIDまたはパスワードが違います。"); }
+      verifyOrRegisterShiftPin_(operatorId, data.pin, data.newPin);
       clearShiftLoginFailures_(loginId);
       return createJsonDataResponse({ success: true, session: createShiftSession("employee", operatorName, operatorId) });
     }
@@ -1726,6 +1804,70 @@ function saveShiftSpecialDayRules(data) {
     PropertiesService.getScriptProperties().setProperty("SHIFT_BAND_V3_MIGRATED", "1");
     return createJsonDataResponse({ success: true, rules: rules });
   } catch (error) { return createJsonResponse(false, error.message || "特殊日設定を保存できませんでした。"); }
+  finally { try { lock.releaseLock(); } catch (_) {} }
+}
+
+
+
+/** 人数・連勤・個人ごとの条件。シフト表で「足りない日」「連勤」などの警告を出すための基準です。 */
+function normalizeShiftStaffingRules_(input) {
+  var src = input || {};
+  var days = function(list) {
+    var out = [0, 0, 0, 0, 0, 0, 0];
+    if (Array.isArray(list)) for (var i = 0; i < 7; i++) { var n = Math.floor(Number(list[i])); out[i] = (isFinite(n) && n >= 0 && n <= 99) ? n : 0; }
+    return out;
+  };
+  var roleMins = (Array.isArray(src.roleMins) ? src.roleMins : []).slice(0, 20).map(function(item) {
+    return { roleId: sanitizeText(item && item.roleId, 100), min: days(item && item.min) };
+  }).filter(function(item) { return !!item.roleId; });
+  var maxConsecutive = Math.floor(Number(src.maxConsecutive));
+  if (!isFinite(maxConsecutive) || maxConsecutive < 0 || maxConsecutive > 31) maxConsecutive = 0;
+  var people = {};
+  var count = 0;
+  var srcPeople = src.people && typeof src.people === "object" ? src.people : {};
+  Object.keys(srcPeople).forEach(function(id) {
+    if (count >= 100) return;
+    var cleanId = sanitizeText(id, 100); var item = srcPeople[id] || {};
+    var maxPerWeek = Math.floor(Number(item.maxPerWeek));
+    if (!isFinite(maxPerWeek) || maxPerWeek < 0 || maxPerWeek > 7) maxPerWeek = 0;
+    var ng = (Array.isArray(item.ngWeekdays) ? item.ngWeekdays : []).map(Number).filter(function(d, i, list) { return d >= 0 && d <= 6 && Math.floor(d) === d && list.indexOf(d) === i; });
+    var weeklyDays = Math.floor(Number(item.weeklyDays));
+    if (!isFinite(weeklyDays) || weeklyDays < 0 || weeklyDays > 7) weeklyDays = 0;
+    var shiftPref = ["early", "late", "any"].indexOf(item.shiftPref) >= 0 ? item.shiftPref : "";
+    if (cleanId && (maxPerWeek || ng.length || weeklyDays || (shiftPref && shiftPref !== "any"))) { people[cleanId] = { maxPerWeek: maxPerWeek, ngWeekdays: ng, weeklyDays: weeklyDays, shiftPref: shiftPref || "any" }; count++; }
+  });
+  var hours = [];
+  for (var h = 0; h < 7; h++) {
+    var item = Array.isArray(src.hours) ? src.hours[h] : null;
+    var ok = item && /^\d{1,2}:\d{2}$/.test(String(item.open)) && /^\d{1,2}:\d{2}$/.test(String(item.close));
+    if (ok) {
+      var o = String(item.open).split(":"), c = String(item.close).split(":");
+      var om = Number(o[0]) * 60 + Number(o[1]), cm = Number(c[0]) * 60 + Number(c[1]);
+      ok = Number(o[0]) < 24 && Number(c[0]) <= 24 && Number(o[1]) < 60 && Number(c[1]) < 60 && cm > om;
+    }
+    hours.push(ok ? { open: String(item.open), close: String(item.close) } : null);
+  }
+  var alwaysRoles = (Array.isArray(src.alwaysRoles) ? src.alwaysRoles : []).slice(0, 20).map(function(id) { return sanitizeText(id, 100); }).filter(function(id, i, list) { return !!id && list.indexOf(id) === i; });
+  return { minTotal: days(src.minTotal), roleMins: roleMins, maxConsecutive: maxConsecutive, people: people, hours: hours, alwaysRoles: alwaysRoles };
+}
+
+function getShiftStaffingRules() {
+  try {
+    var raw = PropertiesService.getScriptProperties().getProperty("SHIFT_STAFFING_RULES_JSON");
+    var rules = normalizeShiftStaffingRules_(raw ? JSON.parse(raw) : {});
+    return createJsonDataResponse({ success: true, rules: rules });
+  } catch (error) { return createJsonResponse(false, error.message || "人数の設定を取得できませんでした。"); }
+}
+
+function saveShiftStaffingRules(data) {
+  var lock = shiftLockHandle_();
+  try {
+    verifyShiftApiKey(data.shiftApiKey);
+    if (!lock.tryLock(10000)) throw new Error("別の保存を処理中です。");
+    var rules = normalizeShiftStaffingRules_(data.rules);
+    safeSetProperty_("SHIFT_STAFFING_RULES_JSON", JSON.stringify(rules));
+    return createJsonDataResponse({ success: true, rules: rules });
+  } catch (error) { return createJsonResponse(false, error.message || "人数の設定を保存できませんでした。"); }
   finally { try { lock.releaseLock(); } catch (_) {} }
 }
 
@@ -2405,7 +2547,7 @@ function runTemplateReset(data) {
       return createJsonDataResponse({ success: true, done: false, archived: archived });
     }
     var businessKeys = [
-      "SHIFT_CYCLE_MASTER_JSON", "SHIFT_AUTO_DRAFT_SETTINGS_JSON", "SHIFT_SPECIAL_DAY_RULES_JSON",
+      "SHIFT_CYCLE_MASTER_JSON", "SHIFT_AUTO_DRAFT_SETTINGS_JSON", "SHIFT_SPECIAL_DAY_RULES_JSON", "SHIFT_STAFFING_RULES_JSON",
       "SHIFT_WORK_TIME_MASTER_" + getStoreId(),
       "SHIFT_CALENDAR_PERIOD_JSON", "SHIFT_PERIOD_STATUSES_JSON", "SHIFT_PAID_LEAVE_BALANCES_JSON",
       "SHIFT_PAID_LEAVE_LEDGER_JSON", "SHIFT_AUDIT_LOG_JSON", "SHIFT_PENDING_JSON", "SHIFT_ERROR_LOG_JSON",
@@ -2426,6 +2568,8 @@ function runTemplateReset(data) {
     Object.keys(all).forEach(function(key) {
       // 期間ごとの休み希望も初期化する（SHIFT_BAND_V3_MIGRATED は残す）。
       if (key.indexOf("SHIFT_SESSION_") === 0 || key.indexOf("SHIFT_LEAVE_REQUESTS_") === 0) p.deleteProperty(key);
+      // PINも、残す操作員1名のぶん以外は消す（消えた従業員の記録を残さない）。
+      if (key.indexOf("SHIFT_PIN_") === 0 && key !== shiftPinPropertyKey_(authorization.operator.id)) p.deleteProperty(key);
     });
     p.deleteProperty("SHIFT_TEMPLATE_RESET_AUTH");
     // 他の端末が次に開いたとき、端末内の設定を自動で消すための目印。

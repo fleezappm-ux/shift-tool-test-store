@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "test:worktime": "node tests/work-time-master.cjs && node tests/pending-queue.cjs 2>/dev/null && node tests/error-log.cjs && node tests/fresh-install.cjs && node --import tsx tests/work-time-options.ts",
+    "test:worktime": "node tests/work-time-master.cjs && node tests/pending-queue.cjs 2>/dev/null && node tests/error-log.cjs && node tests/fresh-install.cjs && node --import tsx tests/work-time-options.ts && node --import tsx tests/staffing-check.ts && node --import tsx tests/auto-assign.ts && node --import tsx tests/auto-assign-shops.ts && node --import tsx tests/staffing-describe.ts",
     "test:reset": "node tests/template-reset.cjs"
   },
   "dependencies": {

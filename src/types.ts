@@ -92,3 +92,18 @@ export interface AutoDraftSettings {
   horizonMonths: number;
   lastRunAt?: string;
 }
+
+/** 1人ごとの条件。ngWeekdays は「毎週決まった休み」、weeklyDays は「週に何日勤務か」、maxPerWeek は上限だけを決めたいとき。 */
+export interface PersonRule { maxPerWeek: number; ngWeekdays: number[]; weeklyDays?: number; shiftPref?: "early" | "late" | "any" }
+
+/** 人数・連勤・個人ごとの条件（シフト表の警告に使う）。曜日は 0=日〜6=土。0人・0日は「チェックしない」。 */
+export interface StaffingRules {
+  minTotal: number[];
+  roleMins: { roleId: string; min: number[] }[];
+  maxConsecutive: number;
+  people: Record<string, PersonRule>;
+  /** 曜日ごとの営業時間（日〜土の7つ）。null は「決めない／休み」 */
+  hours?: ({ open: string; close: string } | null)[];
+  /** 営業時間のあいだ、ずっといてほしい役職 */
+  alwaysRoles?: string[];
+}

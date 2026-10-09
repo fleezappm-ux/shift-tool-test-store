@@ -11,6 +11,8 @@ export function ShiftLogin({ employees, onLogin }: { employees: EmployeeMasterIt
   const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
   const [operatorId, setOperatorId] = useState("");
+  const [pin, setPin] = useState("");
+  const [pinConfirm, setPinConfirm] = useState("");
   // 前回の端末内の名簿は、サーバーから取れなかった時だけの予備にします（初期化後の古い名前を出さないため）。
   const [operatorOptions, setOperatorOptions] = useState<ShiftLoginEmployee[]>([]);
   const [listState, setListState] = useState<"loading" | "ready" | "failed">("loading");
@@ -43,15 +45,25 @@ export function ShiftLogin({ employees, onLogin }: { employees: EmployeeMasterIt
     if (!loginId.trim() || !password || !operatorId) return toast.error("ID・パスワード・操作員を入力してください");
     const operator = operatorOptions.find(item => item.id === operatorId);
     if (!operator) return toast.error("操作員を選択してください");
+    if (!/^[0-9]{4,6}$/.test(pin)) return toast.error(firstTime ? "PINは4〜6桁の数字で決めてください" : "PIN（4〜6桁の数字）を入力してください");
+    if (firstTime && pin !== pinConfirm) return toast.error("PINが2回で一致しません。もう一度入れてください");
     setLoading(true);
     try {
-      const session = await loginShift(loginId.trim(), password, operator.id, operator.displayName || operator.name);
-      setPassword("");
+      const session = await loginShift(loginId.trim(), password, operator.id, operator.displayName || operator.name, firstTime ? "" : pin, firstTime ? pin : "");
+      setPassword(""); setPin(""); setPinConfirm("");
       if (session.role === "admin" && !getManagementApiKey()) { setKeyStep(session); return; }
       onLogin(session);
-    } catch (error) { toast.error(error instanceof Error ? error.message : "ログインできませんでした"); }
+    } catch (error) {
+      const text = error instanceof Error ? error.message : "ログインできませんでした";
+      // 管理者がPINをリセットした直後など、画面の情報が古いとき：最新の状態を読み直して、PINの決め直しへ切り替える
+      if (text.startsWith("PIN_SETUP_REQUIRED:")) { toast.error(text.replace("PIN_SETUP_REQUIRED:", "")); setPin(""); setPinConfirm(""); loadOperators(); }
+      else toast.error(text);
+    }
     finally { setLoading(false); }
   };
+  const selectedOperator = operatorOptions.find(item => item.id === operatorId);
+  // PINが未設定だとわかっている人は、はじめてのログインとして、PINを決めてもらう
+  const firstTime = !!selectedOperator && selectedOperator.hasPin === false;
   if (keyStep) return <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 via-blue-50 to-cyan-50 p-5 font-sans">
     <section className="w-full max-w-md rounded-3xl border border-white/80 bg-white p-7 shadow-2xl shadow-blue-950/10">
       <h1 className="text-xl font-black text-slate-900">管理者用の接続キーを入れてください</h1>
@@ -69,15 +81,22 @@ export function ShiftLogin({ employees, onLogin }: { employees: EmployeeMasterIt
       <label className="text-xs font-bold text-slate-600">ログインID</label><Input value={loginId} onChange={event => setLoginId(event.target.value)} autoComplete="username" className="mt-2 h-12 rounded-xl" />
       <label className="mt-4 block text-xs font-bold text-slate-600">パスワード</label><Input type="password" value={password} onChange={event => setPassword(event.target.value)} onKeyDown={event => { if (event.key === "Enter") void submit(); }} autoComplete="current-password" className="mt-2 h-12 rounded-xl" />
       <label className="mt-4 block text-xs font-bold text-slate-600">操作員</label>
-      <select className="mt-2 h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm" value={operatorId} onChange={event => setOperatorId(event.target.value)}>
+      <select className="mt-2 h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm" value={operatorId} onChange={event => { setOperatorId(event.target.value); setPin(""); setPinConfirm(""); }}>
         <option value="">名前を選択してください</option>
         {operatorOptions.filter(item => item.active).map(item => <option key={item.id} value={item.id}>{item.displayName || item.name}</option>)}
       </select>
+      {operatorId && <div className="mt-4 rounded-xl bg-slate-50 p-4" data-pin-area>
+        <label className="block text-xs font-bold text-slate-600" htmlFor="login-pin">{firstTime ? "PINを決めてください（4〜6桁の数字）" : "PIN（4〜6桁の数字）"}</label>
+        <Input id="login-pin" type="password" inputMode="numeric" pattern="[0-9]*" maxLength={6} value={pin} onChange={event => setPin(event.target.value.replace(/[^0-9]/g, ""))} onKeyDown={event => { if (event.key === "Enter" && !firstTime) void submit(); }} autoComplete={firstTime ? "new-password" : "one-time-code"} className="mt-2 h-12 rounded-xl bg-white tracking-[.4em]" />
+        {firstTime && <><label className="mt-3 block text-xs font-bold text-slate-600" htmlFor="login-pin-confirm">もう一度、同じPINを入れてください</label>
+        <Input id="login-pin-confirm" type="password" inputMode="numeric" pattern="[0-9]*" maxLength={6} value={pinConfirm} onChange={event => setPinConfirm(event.target.value.replace(/[^0-9]/g, ""))} onKeyDown={event => { if (event.key === "Enter") void submit(); }} autoComplete="new-password" className="mt-2 h-12 rounded-xl bg-white tracking-[.4em]" />
+        <p className="mt-2 text-xs leading-5 text-slate-500">はじめてのログインです。このPINは、ほかの人に見えません。忘れたときは管理者にリセットを頼んでください。</p></>}
+      </div>}
       {listState === "loading" && <p className="mt-2 text-xs text-slate-500">名前の一覧を読み込み中…</p>}
       {listState === "failed" && operatorOptions.filter(item => item.active).length === 0 && <div className="mt-2 rounded-lg bg-red-50 p-3 text-xs font-bold text-red-700">名前の一覧を読み込めませんでした（通信が混んでいます）。<button type="button" className="ml-2 rounded-lg border border-red-300 bg-white px-3 py-1 text-red-700" onClick={loadOperators}>もう一度読み込む</button></div>}
       {listState === "ready" && operatorOptions.filter(item => item.active).length === 0 && <p className="mt-2 text-xs font-bold text-red-600">従業員マスタが未設定です。管理者へ確認してください。</p>}
       <Button className="mt-6 h-12 w-full rounded-xl font-bold" disabled={loading} onClick={() => void submit()}><LogIn className="mr-2 h-4 w-4" />{loading ? "確認中…" : "ログイン"}</Button>
-      <p className="mt-4 text-center text-[11px] text-slate-400">ID・パスワードを忘れた場合は管理者へ確認してください。</p>
+      <p className="mt-4 text-center text-[11px] text-slate-400">ID・パスワード・PINを忘れた場合は管理者へ確認してください。</p>
     </section>
   </main>;
 }

@@ -1,0 +1,18 @@
+import assert from "node:assert/strict";
+import { daysText, describeRules, perDayText } from "../src/lib/staffing-describe";
+assert.equal(daysText([1, 2, 3, 4, 5]), "月〜金");
+assert.equal(daysText([1, 2]), "月・火");
+assert.equal(daysText([6, 0]), "土・日");
+assert.equal(daysText([1, 2, 3, 5]), "月〜水・金");
+assert.equal(perDayText([0, 3, 3, 3, 3, 3, 2]), "月〜金は3人、土は2人");
+const lines = describeRules({ rules: { minTotal: [0, 3, 3, 3, 3, 3, 2], roleMins: [{ roleId: "ph", min: [0, 1, 1, 1, 1, 1, 0] }], maxConsecutive: 5, people: { a: { maxPerWeek: 4, ngWeekdays: [0] } } }, roleNames: { ph: "薬剤師" }, personNames: { a: "田中" }, leaveCount: 2 });
+assert.equal(lines[0], "出勤は、月〜金は最低3人、土は最低2人にします。");
+assert.ok(lines.includes("日は人数を決めていません（お休み、または今のままです）。"));
+assert.ok(lines.includes("薬剤師は、月〜金に最低1人必ず入れます。"));
+assert.ok(lines.includes("続けて出勤するのは最大5日までにします。"));
+assert.ok(lines.includes("田中さんは、毎週日曜は休み・週4日まで。"));
+assert.ok(lines.includes("休み希望・有給希望（2件）は、必ず守ります。"));
+assert.ok(describeRules({ rules: { minTotal: [0,0,0,0,0,0,0], roleMins: [], maxConsecutive: 0, people: {} }, roleNames: {}, personNames: {}, leaveCount: 0 })[0].includes("決まっていません"));
+const h = describeRules({ rules: { minTotal: [0,0,0,0,0,0,0], roleMins: [], maxConsecutive: 0, people: {}, hours: [null, { open: "9:00", close: "18:00" }, { open: "9:00", close: "18:00" }, { open: "9:00", close: "18:00" }, null, null, { open: "9:00", close: "13:00" }], alwaysRoles: ["ph"] }, roleNames: { ph: "薬剤師" }, personNames: {}, leaveCount: 0 });
+assert.ok(h.includes("営業時間（月〜水 9:00〜18:00、土 9:00〜13:00）のあいだ、薬剤師がいつもいるようにします。"), JSON.stringify(h));
+console.log("staffing-describe ok");
