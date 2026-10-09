@@ -1641,7 +1641,7 @@ export default function App() {
       margins: { left: 0.3, right: 0.3, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 }
     };
 
-    const totalCols = exportEmployees.length + 1;
+    const totalCols = exportEmployees.length + 2;
 
     // 題名とメタデータ
     const titleRow = overallSheet.addRow(["全体シフト"]);
@@ -1651,12 +1651,12 @@ export default function App() {
 
     const periodStr = `集計期間: ${format(outputDateRange[0], "yyyy/MM/dd")} 〜 ${format(outputDateRange[outputDateRange.length - 1], "yyyy/MM/dd")}`;
     const outputDateStr = `出力日: ${format(new Date(), "yyyy/MM/dd")}`;
-    const metaRow = overallSheet.addRow([periodStr, ...Array(exportEmployees.length).fill(""), outputDateStr]);
-    overallSheet.mergeCells(2, 1, 2, totalCols - 1);
+    const metaRow = overallSheet.addRow([periodStr, ...Array(exportEmployees.length + 1).fill(""), outputDateStr]);
+    overallSheet.mergeCells(2, 1, 2, totalCols - 2);
     metaRow.getCell(totalCols).alignment = { horizontal: 'right' };
     overallSheet.addRow([]); // 空行
 
-    const overallHeaders = ["日付", ...exportEmployees.map(e => e.name)];
+    const overallHeaders = ["日付", ...exportEmployees.map(e => e.name), "備考"];
     const headerRow = overallSheet.addRow(overallHeaders);
     headerRow.font = { bold: true };
     headerRow.alignment = { horizontal: 'center' };
@@ -1677,6 +1677,7 @@ export default function App() {
           const s = getShift(e, date);
           return s?.shift === "任意入力" ? (s?.customShiftText || "任意入力") : (s?.shift === "休み" ? "" : (s?.shift || "-"));
         }),
+        [gr?.type, gr?.text].filter(Boolean).join(" "),
       ];
       const row = overallSheet.addRow(rowData);
       row.height = 22;
@@ -1735,7 +1736,7 @@ export default function App() {
     });
 
     [attendanceData, workHoursData, paidLeaveData].forEach(data => {
-      const row = overallSheet.addRow(data);
+      const row = overallSheet.addRow([...data, ""]);
       row.font = { bold: true };
       row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
         cell.border = borderStyle;
@@ -1749,6 +1750,7 @@ export default function App() {
     exportEmployees.forEach((_, i) => {
       overallSheet.getColumn(i + 2).width = 12; // 少し広げる
     });
+    overallSheet.getColumn(exportEmployees.length + 2).width = 22;
 
     // 2. 各個人のシートを作成
     exportEmployees.forEach(emp => {
@@ -1775,7 +1777,7 @@ export default function App() {
       empMetaRow.getCell(5).alignment = { horizontal: 'right' };
       empSheet.addRow([]);
 
-      const empHeaders = ["日付", "シフト", "休憩時間", "実働時間"];
+      const empHeaders = ["日付", "シフト", "休憩時間", "実働時間", "備考"];
       const empHeaderRow = empSheet.addRow(empHeaders);
       empHeaderRow.font = { bold: true };
       empHeaderRow.alignment = { horizontal: 'center' };
@@ -1792,7 +1794,8 @@ export default function App() {
           format(date, "M/d(E)", { locale: ja }),
           shiftText,
           s?.breakTime || "0:00",
-          s?.workTime || "0:00"
+          s?.workTime || "0:00",
+          [gr?.type, gr?.text].filter(Boolean).join(" ")
         ];
         const row = empSheet.addRow(rowData);
         row.height = 22;
