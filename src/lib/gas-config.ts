@@ -11,14 +11,16 @@ export function isValidGasUrl(raw: string): boolean {
   return GAS_URL_PATTERN.test(normalizeGasUrl(raw));
 }
 
-/** この端末に保存された店舗のURL。なければ、公開時に埋め込まれたURL（従来の方式）を使います。 */
+/** 公開時に埋め込まれたURLがあればそれを使います（お店専用の画面）。なければ、この端末に保存された店舗のURLを使います。
+ *  同じ公開元（github.io）の別の画面が保存したURLと混ざらないよう、埋め込みを先に見ます。 */
 export function readGasUrl(): string {
+  const built = normalizeGasUrl((import.meta as any).env?.VITE_SHIFT_GAS_URL || "");
+  if (GAS_URL_PATTERN.test(built)) return built;
   try {
     const saved = normalizeGasUrl(localStorage.getItem(STORAGE_KEY) || "");
     if (GAS_URL_PATTERN.test(saved)) return saved;
-  } catch (_) { /* 保存領域が使えないときは埋め込みのURLだけを見る */ }
-  const built = normalizeGasUrl((import.meta as any).env?.VITE_SHIFT_GAS_URL || "");
-  return GAS_URL_PATTERN.test(built) ? built : "";
+  } catch (_) { /* 保存領域が使えないときは何もしない */ }
+  return "";
 }
 
 export function saveGasUrl(raw: string): void {
