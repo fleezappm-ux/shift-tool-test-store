@@ -2217,3 +2217,90 @@ function saveShiftWorkTimeMaster(data) {
   } catch (error) { return createJsonResponse(false, error.message || "勤務時間設定を保存できませんでした。"); }
   finally { if (lock.hasLock()) lock.releaseLock(); }
 }
+
+
+/* ============================================================
+ * かんたん初期設定（スプレッドシートのメニューから）
+ * スプレッドシートを開くと上に「シフトツール」メニューが出ます。
+ * 「初期設定を始める」を押し、質問に答えるだけで、ログインの設定が終わります。
+ * ============================================================ */
+function onOpen() {
+  try {
+    SpreadsheetApp.getUi().createMenu("シフトツール")
+      .addItem("① 初期設定を始める", "setupShiftTool")
+      .addItem("接続キーを表示する", "showShiftApiKey")
+      .addItem("設定の状態を確認する", "showShiftSetupCheck")
+      .addToUi();
+  } catch (_) {}
+}
+
+function shiftRandomKey_(length) {
+  var chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  var out = "";
+  for (var i = 0; i < length; i++) out += chars.charAt(Math.floor(Math.random() * chars.length));
+  return out;
+}
+
+/** 質問に1つ答えてもらう。キャンセルや空欄のときは null。 */
+function askShiftSetup_(ui, title, message, validate) {
+  for (var tries = 0; tries < 3; tries++) {
+    var res = ui.prompt(title, message, ui.ButtonSet.OK_CANCEL);
+    if (res.getSelectedButton() !== ui.Button.OK) return null;
+    var text = String(res.getResponseText() || "").trim();
+    var problem = validate ? validate(text) : (text ? "" : "入力してください。");
+    if (!problem) return text;
+    ui.alert(problem);
+  }
+  return null;
+}
+
+function setupShiftTool() {
+  var ui = SpreadsheetApp.getUi();
+  var p = shiftProps_();
+  if (p.getProperty("SHIFT_ADMIN_PASSWORD_HASH") && p.getProperty("SHIFT_EMPLOYEE_MASTER_JSON")) {
+    var again = ui.alert("初期設定は済んでいます", "もう一度やり直すと、管理者・従業員のログイン用ID/パスワードが新しくなります（従業員データは消えません）。続けますか？", ui.ButtonSet.YES_NO);
+    if (again !== ui.Button.YES) return "中止しました。";
+  }
+  var strong = function(label) { return function(t) { return t.length >= 8 ? "" : label + "は8文字以上にしてください。"; }; };
+  var adminId = askShiftSetup_(ui, "1/6 管理者のログインID", "管理者（シフトを作る人）が使うログインIDを決めてください。例：admin-aoi", function(t) { return t.length >= 4 ? "" : "4文字以上にしてください。"; });
+  if (!adminId) return "中止しました。";
+  var adminPassword = askShiftSetup_(ui, "2/6 管理者のパスワード", "管理者用のパスワードを決めてください（8文字以上）。", strong("パスワード"));
+  if (!adminPassword) return "中止しました。";
+  var staffId = askShiftSetup_(ui, "3/6 従業員共通のログインID", "従業員みんなが使う共通のログインIDを決めてください。管理者と違うものにしてください。", function(t) { return t.length < 4 ? "4文字以上にしてください。" : (t === adminId ? "管理者と同じIDは使えません。" : ""); });
+  if (!staffId) return "中止しました。";
+  var staffPassword = askShiftSetup_(ui, "4/6 従業員共通のパスワード", "従業員みんなが使う共通のパスワードを決めてください（8文字以上）。", strong("パスワード"));
+  if (!staffPassword) return "中止しました。";
+  var operatorName = askShiftSetup_(ui, "5/6 あなたの名前", "最初の操作員（あなた）の名前を入れてください。あとで画面から従業員を追加できます。");
+  if (!operatorName) return "中止しました。";
+  var storeName = askShiftSetup_(ui, "6/6 店舗名", "店舗の名前を入れてください。例：あおい薬局");
+  if (!storeName) return "中止しました。";
+
+  p.setProperty("SHIFT_ADMIN_LOGIN_ID", adminId);
+  p.setProperty("SHIFT_ADMIN_SETUP_PASSWORD", adminPassword);
+  p.setProperty("SHIFT_EMPLOYEE_LOGIN_ID", staffId);
+  p.setProperty("SHIFT_EMPLOYEE_SETUP_PASSWORD", staffPassword);
+  if (!p.getProperty("STORE_ID")) p.setProperty("STORE_ID", "STORE-" + shiftRandomKey_(6).toUpperCase());
+  if (!p.getProperty("SHIFT_API_KEY")) p.setProperty("SHIFT_API_KEY", shiftRandomKey_(16));
+  configureShiftAdmin();
+  configureShiftEmployeeLogin();
+  if (!p.getProperty("SHIFT_EMPLOYEE_MASTER_JSON")) {
+    p.setProperty("SHIFT_INITIAL_OPERATOR_NAME", operatorName);
+    initializeShiftOperator();
+  }
+  p.setProperty("SHIFT_STORE_SETTINGS_JSON", JSON.stringify({ storeName: storeName.slice(0, 60), showStoreNameOnHome: true }));
+  shiftSheet_(); requestSheet_();
+  var message = "初期設定が終わりました。\n\n編集者用の接続キー（画面の設定で1回だけ入力します）：\n" + p.getProperty("SHIFT_API_KEY") + "\n\n※メニュー「接続キーを表示する」でいつでも確認できます。\n次は「デプロイ → 新しいデプロイ → ウェブアプリ」でURLを作ってください。";
+  ui.alert("完了", message, ui.ButtonSet.OK);
+  return message;
+}
+
+function showShiftApiKey() {
+  var ui = SpreadsheetApp.getUi();
+  var key = shiftProps_().getProperty("SHIFT_API_KEY");
+  ui.alert("接続キー", key ? "編集者用の接続キー：\n" + key + "\n\n人に見られない場所に控えてください。" : "まだ初期設定が済んでいません。メニューの「① 初期設定を始める」を先に行ってください。", ui.ButtonSet.OK);
+}
+
+function showShiftSetupCheck() {
+  var ui = SpreadsheetApp.getUi();
+  ui.alert("設定の状態", checkShiftSetup(), ui.ButtonSet.OK);
+}

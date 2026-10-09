@@ -27,14 +27,6 @@ jobs:
       - run: npm run lint
       - run: npm run test:worktime
       - run: npm run test:reset
-      - name: Confirm this site has its own GAS destination
-        env:
-          VITE_SHIFT_GAS_URL: ${{ secrets.VITE_SHIFT_GAS_URL }}
-        run: |
-          if [[ ! "$VITE_SHIFT_GAS_URL" =~ ^https://script\.google\.com/macros/s/[^/]+/exec$ ]]; then
-            echo 'Set repository secret VITE_SHIFT_GAS_URL to this site’s dedicated GAS web app URL.' >&2
-            exit 1
-          fi
       - run: npm run build
         env:
           VITE_SHIFT_GAS_URL: ${{ secrets.VITE_SHIFT_GAS_URL }}

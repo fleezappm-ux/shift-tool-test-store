@@ -62,3 +62,20 @@ r=J(ctx.loginShift({loginId:'admin-id',password:'AdminPass#1',employeeId:me.id,e
 // 弱い接続キーは、自己診断で指摘される
 props.SHIFT_API_KEY='1234';out=ctx.checkShiftSetup();assert.match(out,/NG\s+SHIFT_API_KEY（強さ）/);
 console.log('PASS: fresh install walkthrough (setup → check → PIN setup/login → api key → lockouts → PIN reset → weak key warning)');
+// ===== かんたん初期設定（メニューから） =====
+{
+  const answers=['admin-aoi','AdminPass#9','staff-aoi','StaffPass#9','テスト太郎','テスト薬局'];const alerts=[];
+  const ui={ButtonSet:{OK_CANCEL:1,YES_NO:2,OK:3},Button:{OK:'OK',YES:'YES'},prompt:()=>({getSelectedButton:()=>'OK',getResponseText:()=>answers.shift()}),alert:(t,m)=>{alerts.push(m||t);return 'YES'},createMenu(){const m={addItem(){return m},addToUi(){}};return m}};
+  for(const k of Object.keys(props))delete props[k];
+  ctx.SpreadsheetApp.getUi=()=>ui;
+  ctx.shiftProps_().deleteProperty('SHIFT_EMPLOYEE_MASTER_JSON');
+  ctx.setupShiftTool();
+  assert.ok(props.SHIFT_ADMIN_PASSWORD_HASH&&props.SHIFT_EMPLOYEE_PASSWORD_HASH&&props.SHIFT_API_KEY&&props.STORE_ID,'質問に答えるだけで設定が入る');
+  assert.ok(!props.SHIFT_ADMIN_SETUP_PASSWORD&&!props.SHIFT_EMPLOYEE_SETUP_PASSWORD,'平文のパスワードは残らない');
+  assert.match(ctx.checkShiftSetup(),/すべてOK/);
+  const e=J(ctx.getShiftLoginEmployees()).employees;assert.equal(e[0].name,'テスト太郎');
+  assert.equal(JSON.parse(ctx.shiftProps_().getProperty('SHIFT_STORE_SETTINGS_JSON')).storeName,'テスト薬局');
+  assert.ok(alerts.some(a=>String(a).includes(props.SHIFT_API_KEY)),'接続キーが画面に出る');
+  ctx.onOpen();
+  console.log('PASS: menu setup (6 questions → login, key, operator, store name)');
+}

@@ -24,7 +24,7 @@ jobs:
         env:
           GAS_URL: ${{ secrets.VITE_SHIFT_GAS_URL }}
         run: |
-          if [ -z "$GAS_URL" ]; then echo "VITE_SHIFT_GAS_URL が未設定です" >&2; exit 1; fi
+          if [ -z "$GAS_URL" ]; then echo "GASのURLは各店舗が画面で入力する方式のため、ここでは確認しません"; exit 0; fi
           for i in 1 2 3; do
             res=$(curl -sL --max-time 40 -H 'Content-Type: text/plain' -d '{"action":"getShiftResetEpoch"}' "$GAS_URL" || true)
             if echo "$res" | grep -q '"success":true'; then echo "GAS ok"; exit 0; fi
