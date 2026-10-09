@@ -29,7 +29,8 @@ jobs:
       - run: npm run test:reset
       - run: npm run build
         env:
-          VITE_SHIFT_GAS_URL: ${{ secrets.VITE_SHIFT_GAS_URL }}
+          # お店の接続先は画面で入力する方式のため、ここには埋め込まない
+          VITE_SHIFT_GAS_URL: ""
           # リポジトリ名を変えて複製しても、公開サイトが真っ白にならないように、公開先の名前から自動で決める
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
       - uses: actions/upload-pages-artifact@v4
