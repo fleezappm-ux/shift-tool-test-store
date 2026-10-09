@@ -110,10 +110,10 @@ export async function fetchShiftsFromServer(existingEmployees: Employee[], throw
       if (row["社員名"]) serverNames.add(row["社員名"]);
     });
 
-    // 既存の従業員リスト（表示順・id）をなるべく維持しつつ、名前をキーにマージします。
-    // ただし「サーバーに同名データが無く、ローカルにもシフトが1件も無い」＝一度も使われていない
+    // 人の特定は「従業員ID」を優先します。名前で探すのは、IDが無い古い行だけです。
+    // （名前が付け替えられても、別の人のシフトが混ざらないようにするため）
+    // 「サーバーに同名データが無く、ローカルにもシフトが1件も無い」＝一度も使われていない
     // 仮の初期従業員（従業員A〜E など）は、サーバーにデータがある場合は表示から外します。
-    const byName = new Map<string, Employee>();
     const byId = new Map<string, Employee>();
     existingEmployees.forEach(emp => {
       if (/^従業員[A-EＡ-Ｅ]$/.test(String(emp.name || "").trim())) return;
@@ -121,10 +121,9 @@ export async function fetchShiftsFromServer(existingEmployees: Employee[], throw
       if (serverNames.size > 0 && !serverNames.has(emp.name) && !hasLocalShift) {
         return; // 未使用の仮従業員はスキップ
       }
-      const clean = { ...emp, shifts: [] };
-      byName.set(emp.name, clean);
-      byId.set(emp.id, clean);
+      byId.set(emp.id, { ...emp, shifts: [] });
     });
+    const findByName = (name: string) => Array.from(byId.values()).find(emp => emp.name === name);
 
     rows.forEach(row => {
       const name = row["社員名"] || "";
@@ -132,16 +131,11 @@ export async function fetchShiftsFromServer(existingEmployees: Employee[], throw
       const dateStart = row["日付"]?.start;
       if (!dateStart) return;
       const employeeId = row["従業員ID"] || "";
-      if (!byName.has(name) && (!employeeId || !byId.has(employeeId))) {
-        const created = {
-          id: employeeId || Math.random().toString(36).substr(2, 9),
-          name,
-          shifts: []
-        };
-        byName.set(name, created);
-        byId.set(created.id, created);
+      let emp: Employee | undefined = employeeId ? byId.get(employeeId) : findByName(name);
+      if (!emp) {
+        emp = { id: employeeId || Math.random().toString(36).substr(2, 9), name, shifts: [] } as Employee;
+        byId.set(emp.id, emp);
       }
-      const emp = (employeeId && byId.get(employeeId)) || byName.get(name)!;
       const { shift, customShiftText } = parseShiftContent(row["シフト内容"] || "");
       const dayShift: DayShift = {
         date: dateStart,
@@ -168,7 +162,7 @@ export async function fetchShiftsFromServer(existingEmployees: Employee[], throw
     });
 
     const supportsGlobalRemarks = rows.some(row => Object.prototype.hasOwnProperty.call(row, "全体補足種別"));
-    return { employees: Array.from(byName.values()), globalRemarks: Array.from(remarksByDate.values()), supportsGlobalRemarks };
+    return { employees: Array.from(byId.values()), globalRemarks: Array.from(remarksByDate.values()), supportsGlobalRemarks };
   } catch (error) {
     console.error("シフトのサーバー取得に失敗しました（オフラインの可能性）:", error);
     if (throwOnError) throw error;

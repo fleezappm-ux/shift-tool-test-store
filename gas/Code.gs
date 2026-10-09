@@ -258,10 +258,8 @@ function applyShiftRowsToSheet_(incomingRows, periodStart, periodEnd, updatedBy)
     var date = flat["日付"].start;
     var keyA = (flat["従業員ID"] || flat["社員名"]) + "|" + date;
     (byKey[keyA] = byKey[keyA] || []).push(item);
-    if (flat["従業員ID"]) {
-      var legacy = flat["社員名"] + "|" + date;
-      if (!byKey[legacy]) byKey[legacy] = byKey[keyA];
-    }
+    // 名前だけで別の人の行に当てはめない（従業員IDのある行は、IDでだけ探す）。
+    // IDの無い古い行は、keyAが「名前|日付」なので、名前での照合がそのまま使えます。
   });
   var now = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd HH:mm:ss");
   var created = 0, updated = 0, cleared = 0, unchanged = 0;
@@ -284,7 +282,7 @@ function applyShiftRowsToSheet_(incomingRows, periodStart, periodEnd, updatedBy)
     var gType = sanitizeText(rawRow["全体補足種別"], 100);
     var gText = sanitizeText(rawRow["全体補足内容"], 500);
     var hasContent = Boolean(shiftContent || note || gType || gText);
-    var matches = byKey[key] || byKey[employeeName + "|" + dateValue] || [];
+    var matches = byKey[key] || (employeeId ? byKey[employeeName + "|" + dateValue] : null) || [];
     if (!hasContent) {
       matches.forEach(function(m) { if (!deleteRows[m.sheetRow]) { deleteRows[m.sheetRow] = true; cleared++; } });
       if (!matches.length) unchanged++;
@@ -897,7 +895,13 @@ function normalizeShiftEmployeeMaster(items, rolesOverride) {
       aliases: (Array.isArray(item.aliases) ? item.aliases : []).slice(0, 20).map(function(name) { return sanitizeText(name, 100).trim(); }).filter(Boolean)
       ,roleId: selected ? selected.id : "", role: selected ? selected.name : ""
     };
-  }).filter(function(item) { return item.name || !item.active; });
+  }).filter(function(item) { return item.name || !item.active; }).map(function(item, _i, all) {
+    // 別の人の現在の名前と同じ「別名」は持たせない（名前の付け替えで人が混ざるのを防ぐ）。
+    var others = {};
+    all.forEach(function(other) { if (other.id !== item.id && other.active) others[other.name] = true; });
+    item.aliases = item.aliases.filter(function(alias) { return !others[alias]; });
+    return item;
+  });
 }
 
 function readShiftRoleMaster() {

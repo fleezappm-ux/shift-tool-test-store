@@ -101,4 +101,16 @@ console.log('PASS: sheet storage (create, read, diff-only writes, delete, valida
   assert.equal(ctx.readShiftLeaveRequestStore('2026-12-01')[0].id,'old1');assert.equal(props['SHIFT_LEAVE_REQUESTS_2026-12-01'],undefined);
   assert.equal(ctx.findShiftLeaveRequestStore('old1').request.type,'有給希望');
 }
+// 3b. 名前が同じでも、IDが違えば別人（他人の行を上書きしない）
+{
+  const b2={...base,periodStart:'2026-12-01',periodEnd:'2026-12-31'};
+  ctx.saveShiftMonth({...b2,shifts:[row('2026-12-03','早番','idA','藤川')]});
+  r=ctx.saveShiftMonth({...b2,shifts:[row('2026-12-03','遅番','idB','藤川')]});
+  assert.equal(r.created,1,'IDが違う同名の人の行を上書きしてはいけない');
+  const list=ctx.getShifts({}).shifts.filter(x=>x['日付'].start==='2026-12-03');
+  assert.equal(list.length,2);assert.equal(list.find(x=>x['従業員ID']==='idA')['シフト内容'],'早番');
+  // IDの無い古い行は、名前で同じ人として引き継ぐ
+  sheet().data.push(['2026-12-04','古田','','早番','1:00','8:00','','','','管理者','2026-10-09 00:00:00']);
+  r=ctx.saveShiftMonth({...b2,shifts:[row('2026-12-04','遅番','idC','古田')]});assert.equal(r.updated,1);assert.equal(r.created,0);
+}
 console.log('PASS: settings sheet (secrets stay private, 300 staff, 500 requests, migration from old storage)');

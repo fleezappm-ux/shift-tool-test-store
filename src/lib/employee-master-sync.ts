@@ -71,9 +71,15 @@ export async function saveHomeLayout(layout: HomeLayout): Promise<HomeLayout> {
 }
 
 export function mergeEmployeesWithMaster(source: Employee[], master: EmployeeMasterItem[]): Employee[] {
+  // 人の特定は「ID」だけで行います。名前・別名で探すのは、IDがまだ従業員マスタに無い古い記録だけです。
+  // （名前を付け替えたときに、別の人のシフトが混ざらないようにするため）
+  const masterIds = new Set(master.map(item => item.id));
+  const claimed = new Set<Employee>();
   return master.filter(item => item.active && !/^従業員[A-EＡ-Ｅ]$/.test(String(item.name || "").trim())).sort((a, b) => a.displayOrder - b.displayOrder).map(item => {
-    const names = new Set([item.name, ...(item.aliases || [])]);
-    const matches = source.filter(employee => employee.id === item.id || names.has(employee.name));
+    const names = new Set([item.name]);
+    let matches = source.filter(employee => employee.id === item.id);
+    if (!matches.length) matches = source.filter(employee => !masterIds.has(employee.id) && !claimed.has(employee) && names.has(employee.name));
+    matches.forEach(employee => claimed.add(employee));
     return {
       id: item.id,
       name: item.name,

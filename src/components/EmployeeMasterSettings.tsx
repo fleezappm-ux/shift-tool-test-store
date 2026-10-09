@@ -40,7 +40,14 @@ export function EmployeeMasterSettings({ employees, roles, onSave, operatorId, l
     if (row) { row.scrollIntoView({ behavior: "smooth", block: "center" }); row.querySelector<HTMLInputElement>("input")?.focus(); }
   }, [drafts.length]);
   const update = (id: string, patch: Partial<EmployeeMasterItem>) => setDrafts(items => items.map(item => item.id === id ? { ...item, ...patch } : item));
-  const move = (index: number, direction: -1 | 1) => setDrafts(items => { const nextIndex = index + direction; if (nextIndex < 0 || nextIndex >= items.length) return items; const next = [...items]; [next[index], next[nextIndex]] = [next[nextIndex], next[index]]; return next.map((item, order) => ({ ...item, displayOrder: order + 1 })); });
+  const move = (index: number, direction: -1 | 1) => setDrafts(items => {
+    // 画面に見えている（削除されていない）隣の人と入れ替えます。削除ずみの行は飛ばします。
+    let nextIndex = index + direction;
+    while (nextIndex >= 0 && nextIndex < items.length && !items[nextIndex].active) nextIndex += direction;
+    if (nextIndex < 0 || nextIndex >= items.length) return items;
+    const next = [...items]; [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+    return next.map((item, order) => ({ ...item, displayOrder: order + 1 }));
+  });
   const add = () => {
     const unnamed = drafts.find(item => item.active && !item.name.trim());
     if (unnamed) { toast.error("名前が空の行があります。先に名前を入れてください"); newRowRef.current = unnamed.id; setDrafts(items => [...items]); return; }
@@ -60,6 +67,11 @@ export function EmployeeMasterSettings({ employees, roles, onSave, operatorId, l
     if (drafts.some(item => item.active && !item.name.trim())) return toast.error("名前を入力してください");
     const duplicateNames = drafts.filter(item => item.active).filter((item, index, items) => items.findIndex(other => other.name.trim() === item.name.trim()) !== index);
     if (duplicateNames.length) return toast.error("同じ名前が登録されています");
+    // 名前の書き換え（同じ人の名前を変える）を検出します。過去のシフトも新しい名前の人のものになるため、確認します。
+    const renamed = drafts.filter(item => item.active).map(item => ({ item, before: syncedRef.current.find(base => base.id === item.id) })).filter(entry => entry.before && entry.before.active && entry.before.name.trim() && entry.before.name.trim() !== entry.item.name.trim());
+    const swappedNames = renamed.filter(entry => syncedRef.current.some(base => base.id !== entry.item.id && base.active && base.name.trim() === entry.item.name.trim()));
+    if (swappedNames.length) return toast.error(`「${swappedNames[0].item.name.trim()}」は、いまほかの人の名前です。人の入れ替えや並べ替えは、名前を書き換えずに「↑↓」で行ってください（名前を書き換えると、その人の過去のシフトが別の人のものになります）`);
+    if (renamed.length && !window.confirm(`次の名前を変更します。\n${renamed.map(entry => `${entry.before!.name.trim()} → ${entry.item.name.trim()}`).join("\n")}\n\n同じ人の名前を直すときだけ「OK」を押してください。\n名前を変えると、その人の過去のシフト・勤務パターンもすべて新しい名前のものになります。\n別の人に入れ替えたい場合は、キャンセルして「削除」→「従業員追加」をしてください。`)) return;
     setSaving(true);
     try {
       const saved = await onSave(drafts.map((item, index) => {
