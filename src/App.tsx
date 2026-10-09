@@ -60,7 +60,7 @@ import {
   DropdownMenuTrigger 
 } from "@/components/ui/dropdown-menu";
 
-import { AutoDraftSettings, CommentVisibility, Employee, DayShift, ShiftType, GlobalRemark, LeaveRequest, LeaveRequestStatus, LeaveRequestType, PaidLeaveBalance, SpecialDayRule, StaffingRules } from "./types";
+import { AutoDraftSettings, CommentVisibility, Employee, DayShift, ShiftType, GlobalRemark, LeaveRequest, LeaveRequestStatus, LeaveRequestType, PaidLeaveBalance, SpecialDayColor, SpecialDayRule, StaffingRules } from "./types";
 import { DEFAULT_CYCLE_PATTERNS, CyclePatterns } from "./constants";
 import { calculateTimes, generateConfiguredDateRange, normalizeShiftInput, finalizeShiftText, resolveCycleShift } from "./lib/shift-utils";
 import { fetchShiftsFromServer, saveMonthToServer, fetchShiftPeriodStatus, saveShiftPeriodStatus, seedSavedBaseline, subscribePending, flushPendingNow, checkPendingOnServer, PendingStatus } from "./lib/shift-sync";
@@ -332,6 +332,9 @@ export default function App() {
   };
   const [dashboardListView, setDashboardListView] = useState(false);
   const [showLeaveManager, setShowLeaveManager] = useState(false);
+  const [dayLabelDialog, setDayLabelDialog] = useState<string | null>(null);
+  const [dayLabelInput, setDayLabelInput] = useState("");
+  const [dayLabelColor, setDayLabelColor] = useState<SpecialDayColor>("amber");
   const [correctionPopup, setCorrectionPopup] = useState<{ request: LeaveRequest; shiftText: string } | null>(null);
   const [overviewEditing, setOverviewEditing] = useState(false);
   const [creationHintHidden, setCreationHintHidden] = useState(() => templateStorage.getItem("creation_hint_hidden") === "1");
@@ -1072,6 +1075,14 @@ export default function App() {
     } finally {
       setSpecialDayLoading(false);
     }
+  };
+
+  const setDayLabel = async (dateStr: string, target: { ruleId?: string; newName?: string; color?: SpecialDayColor } | null) => {
+    const isFixed = (rule: SpecialDayRule) => /^band-v3:closed-[0-6]$/.test(rule.id) || rule.id === "band-v3:holiday";
+    let next = specialDayRules.map(rule => !isFixed(rule) && rule.mode === "annual" ? { ...rule, dates: rule.dates.filter(value => value !== dateStr) } : rule);
+    if (target?.ruleId) next = next.map(rule => rule.id === target.ruleId ? { ...rule, dates: [...rule.dates, dateStr].sort() } : rule);
+    else if (target?.newName?.trim()) next = [...next, { id: `band-v3:${crypto.randomUUID()}`, name: target.newName.trim(), color: target.color || "amber", behavior: "information", enabled: true, mode: "annual", weekday: 0, weeks: [], dates: [dateStr], showName: true, restMode: "none", restEmployeeIds: [] } as SpecialDayRule];
+    try { await handleSaveSpecialDayRules(next); setDayLabelDialog(null); } catch { /* 失敗の通知は保存処理が出します */ }
   };
 
   const [setupHidden, setSetupHidden] = useState(() => templateStorage.getItem("setup_checklist_hidden") === "1");
@@ -2262,6 +2273,21 @@ export default function App() {
                         <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setOverviewCell(null)}>キャンセル</Button><Button type="submit" disabled={isLocked || periodStatusLoading}>変更する</Button></div>
                       </form>}
                     </dialog>
+                    {dayLabelDialog && appSession.role === "admin" && (() => {
+                      const dlgDate = dayLabelDialog;
+                      const presets = specialDayRules.filter(rule => !/^band-v3:closed-[0-6]$/.test(rule.id) && rule.id !== "band-v3:holiday" && rule.mode === "annual" && rule.enabled);
+                      const current = presets.find(rule => rule.dates.includes(dlgDate));
+                      const warn = staffingWarnings?.byDate[dlgDate];
+                      return <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/40 p-3 sm:items-center" onClick={() => setDayLabelDialog(null)}><div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl" onClick={event => event.stopPropagation()}>
+                        <h3 className="text-lg font-black">{format(new Date(`${dlgDate}T00:00:00`), "M月d日（E）", { locale: ja })}の備考・帯</h3>
+                        <p className="mt-1 text-xs text-slate-600">選ぶと、この日に帯色と文字が付きます（Excelの備考にも出ます）。</p>
+                        {warn && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-800">⚠ {warn.join("／")}</p>}
+                        <div className="mt-3 grid gap-2">{presets.map(rule => <button key={rule.id} type="button" className={`rounded-xl border-2 px-3 py-3 text-left text-sm font-black ${current?.id === rule.id ? "border-blue-600 bg-blue-50" : "border-slate-200 bg-white"}`} onClick={() => void setDayLabel(dlgDate, { ruleId: rule.id })}>{current?.id === rule.id ? "✓ " : ""}{rule.name}</button>)}{presets.length === 0 && <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">よく使う備考は、設定の「お休みの日」で「この日だけ」のカードを作ると、ここに並びます。</p>}</div>
+                        <div className="mt-3 rounded-xl border p-3"><label className="text-xs font-bold">その場で新しく作る（例：当番薬局 谷川整形）<input className="mt-1 h-11 w-full rounded-lg border px-3 text-sm" value={dayLabelInput} onChange={event => setDayLabelInput(event.target.value)} placeholder="文字を入力" /></label><select className="mt-2 h-10 w-full rounded-lg border bg-white px-2 text-sm" value={dayLabelColor} onChange={event => setDayLabelColor(event.target.value as SpecialDayColor)}>{([["amber", "黄"], ["blue", "青"], ["green", "緑"], ["purple", "紫"], ["red", "赤"], ["gray", "灰"]] as const).map(([value, label]) => <option key={value} value={value}>色：{label}</option>)}</select><Button className="mt-2 h-11 w-full font-bold" disabled={!dayLabelInput.trim() || specialDayLoading} onClick={() => void setDayLabel(dlgDate, { newName: dayLabelInput, color: dayLabelColor })}>この文字で追加</Button></div>
+                        <div className="mt-3 grid grid-cols-2 gap-2"><Button variant="outline" className="h-11" onClick={() => setDayLabelDialog(null)}>閉じる</Button><Button variant="outline" className="h-11 text-red-700" disabled={!current || specialDayLoading} onClick={() => void setDayLabel(dlgDate, null)}>この日の指定を外す</Button></div>
+                        <p className="mt-2 text-[11px] text-slate-500">すでに入力したシフトは変わりません。自動作成で休みにするかは、設定のカードで決めます。</p>
+                      </div></div>;
+                    })()}
                     {correctionPopup && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4" onClick={() => setCorrectionPopup(null)}><div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl" onClick={event => event.stopPropagation()}><h3 className="text-lg font-black text-red-700">訂正依頼</h3><p className="mt-2 text-sm font-bold">{correctionPopup.request.employeeName}　{correctionPopup.request.date ? format(new Date(`${correctionPopup.request.date}T00:00:00`), "M/d（E）", { locale: ja }) : ""}</p><div className="mt-3 rounded-xl bg-slate-100 p-3 text-sm"><span className="text-xs font-bold text-slate-500">現在の勤務</span><p className="font-black">{correctionPopup.shiftText}</p></div><div className="mt-2 rounded-xl bg-red-50 p-3 text-sm"><span className="text-xs font-bold text-red-700">依頼内容</span><p className="whitespace-pre-wrap font-bold">{correctionPopup.request.comment || "（コメントなし）"}</p></div><p className="mt-3 text-xs text-slate-600">返事が必要なら「管理者からのお知らせ」で本人を指定して送れます。</p><div className="mt-4 grid grid-cols-2 gap-2"><Button variant="outline" onClick={() => setCorrectionPopup(null)}>閉じる</Button>{appSession.role === "admin" && <Button className="bg-red-600 hover:bg-red-700" onClick={async () => { const target = correctionPopup.request; try { const saved = await updateLeaveRequestStatus(target.id, "対応済み"); setLeaveRequests(prev => prev.map(r => r.id === saved.id ? saved : r)); setHomePendingCorrections(prev => prev.filter(r => r.id !== saved.id)); setCorrectionPopup(null); toast.success("確認しました"); } catch (error) { toast.error(error instanceof Error ? error.message : "更新できませんでした"); } }}>確認した</Button>}</div></div></div>}
                     {isFromAdmin && showLeaveManager && <LeaveRequestManager requests={leaveRequests} loading={leaveRequestLoading} onStatusChange={handleLeaveRequestStatus} onDelete={handleLeaveRequestDelete} />}
                     {SHOW_SHIFT_WIZARD && inCreation && overviewEditing && !isLocked && <div className="rounded-xl border-2 border-blue-200 bg-blue-50 p-3" data-auto-assign-bar>
@@ -2287,7 +2313,6 @@ export default function App() {
                                 </button>
                               </TableHead>
                             ))}
-                            <TableHead className="dashboard-remarks-col h-10 font-bold text-muted-foreground border-r border-border">備考</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -2298,7 +2323,7 @@ export default function App() {
 
                             return (
                               <TableRow key={date.toISOString()} className={`h-10 ${rowBgClass}`}>
-                                <TableCell className="dashboard-date-col py-2 border-r border-border">{format(date, "MM/dd")}</TableCell>
+                                <TableCell className="dashboard-date-col py-2 border-r border-border">{appSession.role === "admin" && !isLocked ? <button type="button" className="block w-full text-inherit" aria-label={`${format(date, "M月d日")}の備考・帯を設定`} onClick={() => { setDayLabelInput(""); setDayLabelDialog(dateStr); }}>{format(date, "MM/dd")}{gr?.type && <span className="block truncate text-[8px] font-bold leading-tight text-slate-600">{gr.type}</span>}{staffingWarnings?.byDate[dateStr] && <span data-staffing-date className="block text-[9px] font-bold text-amber-700">⚠</span>}</button> : <>{format(date, "MM/dd")}{gr?.type && <span className="block truncate text-[8px] font-bold leading-tight text-slate-600">{gr.type}</span>}</>}</TableCell>
                                 <TableCell className="dashboard-day-col py-2 text-muted-foreground border-r border-border">{format(date, "E", { locale: ja })}</TableCell>
                                 {dashboardEmployees.map(emp => {
                                   const s = getShift(emp, date);
@@ -2327,7 +2352,6 @@ export default function App() {
                                     </TableCell>
                                   );
                                 })}
-                                <TableCell className="dashboard-remarks-col dashboard-band-name py-2 border-r border-border">{gr?.type || ""}{appSession.role === "admin" && staffingWarnings?.byDate[dateStr] && <span data-staffing-date className="ml-1 text-[11px] font-bold text-amber-700" title={staffingWarnings.byDate[dateStr].join("／")}>⚠ {staffingWarnings.byDate[dateStr].join("／")}</span>}</TableCell>
                               </TableRow>
                             );
                           })}
@@ -2364,7 +2388,6 @@ export default function App() {
                                 </TableCell>
                               );
                             })}
-                            <TableCell className="dashboard-remarks-col border-r border-border" />
                           </TableRow>
                         </TableBody>
                       </Table>
