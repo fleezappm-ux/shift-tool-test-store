@@ -103,7 +103,7 @@ function dispatchShiftAction_(data) {
 
 
 
-/** 文字列を安全な長さに丸めます。想定外に巨大な入力でNotion APIがエラーになるのを防ぎます。 */
+/** 文字列を安全な長さに丸めます。想定外に巨大な入力を防ぎます。 */
 /** 文字列の長さを検証します。上限を超えた場合は、黙って切り詰めずエラーにします。 */
 function sanitizeText(value, maxLength) {
   var text = value === null || value === undefined ? "" : String(value);
@@ -133,25 +133,9 @@ function sanitizeDateValue(value) {
 
 
 
-function createTitleProperty(text) {
-  var safeText = sanitizeText(text, 500);
-  return {
-    title: safeText
-      ? [{ text: { content: safeText } }]
-      : []
-  };
-}
 
 
 
-function createRichTextProperty(text) {
-  var safeText = sanitizeText(text, 2000);
-  return {
-    rich_text: safeText
-      ? [{ text: { content: safeText } }]
-      : []
-  };
-}
 
 
 
@@ -166,120 +150,18 @@ function createJsonResponse(success, message) {
 
 
 
-function statusPageToObject(page) {
-  var obj = flattenStatusProperties(page.properties || {});
-  obj.id = page.id || "";
-  obj.url = page.url || "";
-  return obj;
-}
 
 
 
-function flattenStatusProperties(properties) {
-  var result = {};
-  Object.keys(properties || {}).forEach(function(name) {
-    result[name] = statusPlainValue(properties[name]);
-  });
-  return result;
-}
 
 
 
-function statusPlainValue(prop) {
-  if (!prop) return null;
-  switch (prop.type) {
-    case "title": return statusJoinText(prop.title);
-    case "rich_text": return statusJoinText(prop.rich_text);
-    case "number": return prop.number;
-    case "select": return prop.select ? prop.select.name : "";
-    case "multi_select": return (prop.multi_select || []).map(function(x){ return x.name; });
-    case "date": return prop.date ? { start: prop.date.start || "", end: prop.date.end || "" } : null;
-    case "checkbox": return Boolean(prop.checkbox);
-    case "url": return prop.url || "";
-    case "email": return prop.email || "";
-    case "phone_number": return prop.phone_number || "";
-    case "status": return prop.status ? prop.status.name : "";
-    case "created_time": return prop.created_time || "";
-    case "last_edited_time": return prop.last_edited_time || "";
-    default: return null;
-  }
-}
 
 
 
-function statusJoinText(items) {
-  return (items || []).map(function(x) { return x.plain_text || ""; }).join("");
-}
 
 
 
-/**
- * Notionデータベースを検索します。Notion APIは1回のリクエストで最大100件までしか
- * 返さない仕様があるため、たくさんの件数が必要な呼び出し（page_size未指定、または
- * 100以上を指定した場合）では、has_more/next_cursorを使って自動的に複数回に
- * 分けて全件取得します。少量だけ欲しい場合（page_sizeに100未満を明示指定した場合）は、
- * 従来通り1回のリクエストだけで終わります。
- */
-function queryNotionDatabase(apiKey, databaseId, body) {
-  var perfNotionStart = Date.now();
-  var perfPageCount = 0;
-  var requestBody = {};
-  for (var k in body) { requestBody[k] = body[k]; }
-
-  var wantsAll = requestBody.page_size === undefined || requestBody.page_size >= 100;
-  if (requestBody.page_size !== undefined && requestBody.page_size > 100) {
-    requestBody.page_size = 100;
-  }
-
-  var allResults = [];
-  var hasMore = true;
-
-  while (hasMore) {
-    perfPageCount += 1;
-    var response = UrlFetchApp.fetch(
-      "https://api.notion.com/v1/databases/" + databaseId + "/query",
-      {
-        method: "post",
-        contentType: "application/json",
-        headers: {
-          Authorization: "Bearer " + apiKey,
-          "Notion-Version": "2022-06-28"
-        },
-        payload: JSON.stringify(requestBody),
-        muteHttpExceptions: true
-      }
-    );
-
-    var responseCode = response.getResponseCode();
-    var responseBody = response.getContentText();
-
-    if (responseCode !== 200) {
-      var message = responseBody;
-      try {
-        var errorJson = JSON.parse(responseBody);
-        message = errorJson.message || responseBody;
-      } catch (_) {}
-      throw new Error("Notion API Error: " + message);
-    }
-
-    var parsed = JSON.parse(responseBody);
-    allResults = allResults.concat(parsed.results || []);
-
-    hasMore = wantsAll && !!parsed.has_more;
-    if (hasMore) {
-      requestBody.start_cursor = parsed.next_cursor;
-    }
-  }
-
-  console.log(
-    "[PERF] stage=notion_query_complete" +
-    " pages=" + perfPageCount +
-    " rows=" + allResults.length +
-    " ms=" + (Date.now() - perfNotionStart)
-  );
-
-  return allResults;
-}
 
 
 
@@ -290,74 +172,199 @@ function createJsonDataResponse(data) {
 }
 
 
+/* ============================================================
+ * スプレッドシート保存層（Notionの代わり）
+ * このスクリプトを入れたスプレッドシートに「シフト」「休み希望」の2枚を自動で作り、そこへ保存します。
+ * 開くのは1回の実行につき1回だけにして、読み書きはまとめて行います（速くするため）。
+ * ============================================================ */
+var SHIFT_SHEET_NAME_ = "シフト";
+var SHIFT_SHEET_HEADERS_ = ["日付", "社員名", "従業員ID", "シフト内容", "休憩時間", "実働時間", "備考", "全体補足種別", "全体補足内容", "最終更新者", "更新日時"];
+var REQUEST_SHEET_NAME_ = "休み希望";
+var REQUEST_SHEET_HEADERS_ = ["申請ID", "従業員ID", "氏名", "希望日", "対象期間開始", "対象期間終了", "希望区分", "コメント", "公開範囲", "状態", "提出日時", "更新日時", "希望開始時間", "希望終了時間", "却下理由"];
+var SHIFT_SS_CACHE_ = null;
 
-function createNotionPage(apiKey, databaseId, properties) {
-  return requestNotion(apiKey, "https://api.notion.com/v1/pages", "post", {
-    parent: { database_id: databaseId },
-    properties: properties
+/** このスクリプトのスプレッドシートを返します（同じ実行中は開き直さない）。 */
+function ss_() {
+  if (SHIFT_SS_CACHE_) return SHIFT_SS_CACHE_;
+  var book = null;
+  try { book = SpreadsheetApp.getActiveSpreadsheet(); } catch (_) { book = null; }
+  if (!book) {
+    var id = PropertiesService.getScriptProperties().getProperty("SHEET_ID");
+    if (!id) throw new Error("保存先のスプレッドシートが見つかりません。スプレッドシートの「拡張機能 → Apps Script」からこのコードを開いてください。");
+    book = SpreadsheetApp.openById(id);
+  }
+  SHIFT_SS_CACHE_ = book;
+  return book;
+}
+
+/** 名前のシートを返します。無ければ見出し付きで作ります。日付などが勝手に変換されないよう、全体を文字列形式にします。 */
+function ensureSheet_(name, headers) {
+  var book = ss_();
+  var sheet = book.getSheetByName(name);
+  if (!sheet) {
+    sheet = book.insertSheet(name);
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight("bold").setBackground("#e8f0fe");
+    sheet.setFrozenRows(1);
+    try { sheet.getRange(1, 1, sheet.getMaxRows(), headers.length).setNumberFormat("@"); } catch (_) {}
+  }
+  return sheet;
+}
+function shiftSheet_() { return ensureSheet_(SHIFT_SHEET_NAME_, SHIFT_SHEET_HEADERS_); }
+function requestSheet_() { return ensureSheet_(REQUEST_SHEET_NAME_, REQUEST_SHEET_HEADERS_); }
+
+/** セルの値を文字列にそろえます（日付型になっていても yyyy-MM-dd に直す）。 */
+function cellText_(value) {
+  if (value === null || value === undefined) return "";
+  if (Object.prototype.toString.call(value) === "[object Date]") return Utilities.formatDate(value, "Asia/Tokyo", "yyyy-MM-dd");
+  return String(value);
+}
+
+/** シフトシートの全行を1回で読み、画面が使う形（旧Notionの形）にして返します。 */
+function readShiftSheetRows_() {
+  var sheet = shiftSheet_();
+  var last = sheet.getLastRow();
+  if (last < 2) return [];
+  var values = sheet.getRange(2, 1, last - 1, SHIFT_SHEET_HEADERS_.length).getValues();
+  var rows = [];
+  for (var i = 0; i < values.length; i++) {
+    var v = values[i];
+    var date = cellText_(v[0]).slice(0, 10);
+    var name = cellText_(v[1]);
+    if (!date || !name) continue;
+    rows.push({ sheetRow: i + 2, flat: {
+      id: "r:" + (cellText_(v[2]) || name) + "|" + date,
+      "日付": { start: date, end: "" }, "社員名": name, "従業員ID": cellText_(v[2]),
+      "シフト内容": cellText_(v[3]), "休憩時間": cellText_(v[4]), "実働時間": cellText_(v[5]), "備考": cellText_(v[6]),
+      "全体補足種別": cellText_(v[7]), "全体補足内容": cellText_(v[8]), "最終更新者氏名": cellText_(v[9])
+    } });
+  }
+  return rows;
+}
+
+/** 一覧のキャッシュは使いません（スプレッドシートは十分速く、古い表示が出るのを防ぐため）。呼び出し元の互換用に残しています。 */
+function invalidateShiftsCache_() {}
+
+/**
+ * 送られてきた行を、シフトシートへ反映します（まとめて1回で読み、1回で書く）。
+ * - 値がある行: 無ければ追加、あれば内容が変わったときだけ更新
+ * - 全項目が空の行: 既存行があれば削除
+ */
+function applyShiftRowsToSheet_(incomingRows, periodStart, periodEnd, updatedBy) {
+  var sheet = shiftSheet_();
+  var existing = readShiftSheetRows_();
+  var byKey = {};
+  existing.forEach(function(item) {
+    var flat = item.flat;
+    var date = flat["日付"].start;
+    var keyA = (flat["従業員ID"] || flat["社員名"]) + "|" + date;
+    (byKey[keyA] = byKey[keyA] || []).push(item);
+    if (flat["従業員ID"]) {
+      var legacy = flat["社員名"] + "|" + date;
+      if (!byKey[legacy]) byKey[legacy] = byKey[keyA];
+    }
   });
-}
-
-
-
-/** Notion IDのハイフン有無・大文字小文字の違いを吸収して比較できる形に正規化します。 */
-function normalizeNotionId(id) {
-  return String(id || "").replace(/-/g, "").toLowerCase();
-}
-
-
-
-/** 指定したページIDが、実際に想定するデータベースに属しているかを確認します。属していなければ処理を中断します。 */
-function assertPageBelongsToDatabase(apiKey, pageId, expectedDatabaseId) {
-  if (!pageId) {
-    throw new Error("IDが指定されていません。");
-  }
-  if (!expectedDatabaseId) {
-    throw new Error("対象データベースの設定が未完了です。");
-  }
-  var page = requestNotion(apiKey, "https://api.notion.com/v1/pages/" + pageId, "get", null);
-  var actualDatabaseId = page.parent && page.parent.database_id ? page.parent.database_id : null;
-  if (!actualDatabaseId || normalizeNotionId(actualDatabaseId) !== normalizeNotionId(expectedDatabaseId)) {
-    throw new Error("指定されたIDが対象のデータベースに属していないため、処理を中断しました。");
-  }
-  return page;
-}
-
-
-
-function updateNotionPage(apiKey, pageId, properties) {
-  return requestNotion(apiKey, "https://api.notion.com/v1/pages/" + pageId, "patch", {
-    properties: properties
+  var now = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd HH:mm:ss");
+  var created = 0, updated = 0, cleared = 0, unchanged = 0;
+  var seen = {};
+  var updates = [];      // { sheetRow, values }
+  var appends = [];      // values
+  var deleteRows = {};   // sheetRow -> true
+  incomingRows.forEach(function(rawRow) {
+    var employeeName = sanitizeText(rawRow["社員名"], 100);
+    var employeeId = sanitizeText(rawRow["従業員ID"], 100);
+    var dateValue = sanitizeDateValue(rawRow["日付"]);
+    if (!employeeName || !dateValue || dateValue < periodStart || dateValue > periodEnd) throw new Error("月次シフト内に不正な社員名または日付があります。");
+    var key = (employeeId || employeeName) + "|" + dateValue;
+    if (seen[key]) throw new Error("同じ社員・日付のシフトが重複しています。");
+    seen[key] = true;
+    var shiftContent = sanitizeText(rawRow["シフト内容"], 200);
+    var breakTime = sanitizeText(rawRow["休憩時間"], 50);
+    var workTime = sanitizeText(rawRow["実働時間"], 50);
+    var note = sanitizeText(rawRow["備考"], 500);
+    var gType = sanitizeText(rawRow["全体補足種別"], 100);
+    var gText = sanitizeText(rawRow["全体補足内容"], 500);
+    var hasContent = Boolean(shiftContent || note || gType || gText);
+    var matches = byKey[key] || byKey[employeeName + "|" + dateValue] || [];
+    if (!hasContent) {
+      matches.forEach(function(m) { if (!deleteRows[m.sheetRow]) { deleteRows[m.sheetRow] = true; cleared++; } });
+      if (!matches.length) unchanged++;
+      return;
+    }
+    var by = rawRow._u ? sanitizeText(rawRow._u, 100) : updatedBy;
+    var values = [dateValue, employeeName, employeeId, shiftContent, breakTime, workTime, note, gType, gText, by, now];
+    if (!matches.length) { appends.push(values); created++; return; }
+    var cur = matches[0].flat;
+    var changed = cur["社員名"] !== employeeName || cur["シフト内容"] !== shiftContent || cur["休憩時間"] !== breakTime || cur["実働時間"] !== workTime ||
+      cur["備考"] !== note || cur["全体補足種別"] !== gType || cur["全体補足内容"] !== gText;
+    if (changed) { updates.push({ sheetRow: matches[0].sheetRow, values: values }); updated++; } else { unchanged++; }
+    for (var i = 1; i < matches.length; i++) { if (!deleteRows[matches[i].sheetRow]) { deleteRows[matches[i].sheetRow] = true; cleared++; } }
   });
+  var width = SHIFT_SHEET_HEADERS_.length;
+  var deleteCount = Object.keys(deleteRows).length;
+  if (deleteCount > 0) {
+    // 削除がある時は、残す行を組み直して1回で書き直す（1行ずつ消すより速く、ずれない）。
+    var last = sheet.getLastRow();
+    var all = last >= 2 ? sheet.getRange(2, 1, last - 1, width).getValues() : [];
+    var updateMap = {};
+    updates.forEach(function(u) { updateMap[u.sheetRow] = u.values; });
+    var kept = [];
+    for (var r = 0; r < all.length; r++) {
+      var rowNo = r + 2;
+      if (deleteRows[rowNo]) continue;
+      kept.push(updateMap[rowNo] || all[r]);
+    }
+    appends.forEach(function(v) { kept.push(v); });
+    if (last >= 2) sheet.getRange(2, 1, last - 1, width).clearContent();
+    if (kept.length) sheet.getRange(2, 1, kept.length, width).setValues(kept);
+  } else {
+    updates.forEach(function(u) { sheet.getRange(u.sheetRow, 1, 1, width).setValues([u.values]); });
+    if (appends.length) sheet.getRange(sheet.getLastRow() + 1, 1, appends.length, width).setValues(appends);
+  }
+  SpreadsheetApp.flush();
+  return { created: created, updated: updated, cleared: cleared, unchanged: unchanged };
+}
+
+/** 休み希望を「休み希望」シートに1行で記録します（申請IDで探して上書き、なければ追加）。控えの記録なので、失敗しても申請自体は止めません。 */
+function syncShiftLeaveRequestToSheet_(request) {
+  if (!request) return;
+  try {
+    var sheet = requestSheet_();
+    var values = [request.id, request.employeeId || "", request.employeeName, request.date || "", request.periodStart, request.periodEnd, request.type, request.comment || "", request.commentVisibility === "editors" ? "編集者のみ" : "全員", request.status, request.submittedAt, request.updatedAt, request.desiredWorkStart || "", request.desiredWorkEnd || "", request.rejectionReason || ""];
+    var last = sheet.getLastRow();
+    var rowNo = 0;
+    if (last >= 2) {
+      var ids = sheet.getRange(2, 1, last - 1, 1).getValues();
+      for (var i = 0; i < ids.length; i++) { if (String(ids[i][0]) === String(request.id)) { rowNo = i + 2; break; } }
+    }
+    if (!rowNo) rowNo = last + 1;
+    sheet.getRange(rowNo, 1, 1, values.length).setValues([values]);
+  } catch (error) { console.error("休み希望シートへの記録に失敗: " + error); }
+}
+function removeShiftLeaveRequestFromSheet_(id) {
+  try {
+    var sheet = requestSheet_();
+    var last = sheet.getLastRow();
+    if (last < 2) return;
+    var ids = sheet.getRange(2, 1, last - 1, 1).getValues();
+    for (var i = ids.length - 1; i >= 0; i--) { if (String(ids[i][0]) === String(id)) sheet.deleteRow(i + 2); }
+  } catch (error) { console.error("休み希望シートからの削除に失敗: " + error); }
 }
 
 
 
-function requestNotion(apiKey, url, method, body) {
-  var options = {
-    method: method,
-    contentType: "application/json",
-    headers: {
-      Authorization: "Bearer " + apiKey,
-      "Notion-Version": "2022-06-28"
-    },
-    muteHttpExceptions: true
-  };
-  if (body !== null && body !== undefined) {
-    options.payload = JSON.stringify(body);
-  }
-  var response = UrlFetchApp.fetch(url, options);
-  var responseCode = response.getResponseCode();
-  if (responseCode < 200 || responseCode >= 300) {
-    var responseBody = response.getContentText();
-    var message = responseBody;
-    try {
-      message = JSON.parse(responseBody).message || responseBody;
-    } catch (_) {}
-    throw new Error("Notion API Error: " + message);
-  }
-  return JSON.parse(response.getContentText());
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -374,9 +381,8 @@ function getStoreId() {
 
 /* ------------------------------------------------------------
  * シフト管理ツール：休み希望の掲示板公開設定
- * 店舗設定DB（NOTION_STORE_DATABASE_ID）を正本とし、店舗ID行に
- * 「休み希望公開設定」プロパティを保存・取得します。端末のlocalStorage
- * には依存せず、全端末が同じ設定を取得できるようにします。
+ * スクリプトの設定に保存し、端末のlocalStorageには依存せず、
+ * 全端末が同じ設定を取得できるようにします。
  * ------------------------------------------------------------ */
 var SHIFT_BOARD_VISIBILITY_VALUES = ["immediate", "after_approval", "private"];
 
@@ -399,29 +405,10 @@ function shiftBoardVisibilityLabelToValue(label) {
 
 
 /** 休み希望の掲示板公開設定を店舗設定DBから取得します。DB未設定時は安全側でimmediateを返します。 */
-/** 休み希望の公開設定を読み取って値（immediate / after_approval / private）を返す共通処理。 */
+/** 休み希望の公開設定の値（immediate / after_approval / private）を返します。未設定なら全員公開です。 */
 function readShiftBoardVisibilityValue() {
-  var p = PropertiesService.getScriptProperties();
-  var apiKey = p.getProperty("NOTION_API_KEY");
-  var storeDbId = p.getProperty("NOTION_STORE_DATABASE_ID");
-  var stored = p.getProperty("SHIFT_BOARD_VISIBILITY_FALLBACK_" + getStoreId());
-  // 保存時にここへも書いているので、あればNotionへ問い合わせず（約0.7秒の節約）これを使う。
-  if (stored) return stored;
-  var fallback = "immediate";
-  if (!apiKey || !storeDbId) return fallback;
-  var rows = queryNotionDatabase(apiKey, storeDbId, {
-    filter: { property: "店舗ID", rich_text: { equals: getStoreId() } },
-    page_size: 1
-  });
-  var resolved = fallback;
-  if (rows.length) {
-    var obj = statusPageToObject(rows[0]);
-    var label = obj["休み希望公開設定"] || "";
-    if (label) resolved = shiftBoardVisibilityLabelToValue(label);
-  }
-  // 次からNotionへ問い合わせなくて済むよう、ここへ控えておく（保存時にも更新される）。
-  p.setProperty("SHIFT_BOARD_VISIBILITY_FALLBACK_" + getStoreId(), resolved);
-  return resolved;
+  var stored = PropertiesService.getScriptProperties().getProperty("SHIFT_BOARD_VISIBILITY_FALLBACK_" + getStoreId());
+  return SHIFT_BOARD_VISIBILITY_VALUES.indexOf(stored) >= 0 ? stored : "immediate";
 }
 
 function getShiftStoreBoardVisibility(data) {
@@ -435,7 +422,7 @@ function getShiftStoreBoardVisibility(data) {
 
 
 
-/** 休み希望の掲示板公開設定を店舗設定DBへ保存します。編集者用のSHIFT_API_KEYを必須とします。 */
+/** 休み希望の掲示板公開設定を保存します。編集者用のSHIFT_API_KEYを必須とします。 */
 function saveShiftStoreBoardVisibility(data) {
   var lock = shiftLockHandle_();
   try {
@@ -443,38 +430,7 @@ function saveShiftStoreBoardVisibility(data) {
     verifyShiftApiKey(data.shiftApiKey);
     var visibility = sanitizeText(data.visibility, 30);
     if (SHIFT_BOARD_VISIBILITY_VALUES.indexOf(visibility) === -1) throw new Error("公開設定の値が正しくありません。");
-    var label = SHIFT_BOARD_VISIBILITY_LABELS[visibility];
-
-    var p = PropertiesService.getScriptProperties();
-    p.setProperty("SHIFT_BOARD_VISIBILITY_FALLBACK_" + getStoreId(), visibility);
-
-    var apiKey = p.getProperty("NOTION_API_KEY");
-    var storeDbId = p.getProperty("NOTION_STORE_DATABASE_ID");
-    if (!apiKey || !storeDbId) {
-      return createJsonDataResponse({ success: true, visibility: visibility });
-    }
-
-    var databaseUrl = "https://api.notion.com/v1/databases/" + storeDbId;
-    var database = requestNotion(apiKey, databaseUrl, "get", null);
-    if (!database.properties || !database.properties["休み希望公開設定"]) {
-      requestNotion(apiKey, databaseUrl, "patch", {
-        properties: { "休み希望公開設定": { select: { options: Object.keys(SHIFT_BOARD_VISIBILITY_LABELS).map(function(key) { return { name: SHIFT_BOARD_VISIBILITY_LABELS[key] }; }) } } }
-      });
-    }
-
-    var rows = queryNotionDatabase(apiKey, storeDbId, {
-      filter: { property: "店舗ID", rich_text: { equals: getStoreId() } },
-      page_size: 1
-    });
-    if (rows.length) {
-      updateNotionPage(apiKey, rows[0].id, { "休み希望公開設定": { select: { name: label } } });
-    } else {
-      createNotionPage(apiKey, storeDbId, {
-        "店舗名": createTitleProperty("店舗名を設定"),
-        "店舗ID": createRichTextProperty(getStoreId()),
-        "休み希望公開設定": { select: { name: label } }
-      });
-    }
+    PropertiesService.getScriptProperties().setProperty("SHIFT_BOARD_VISIBILITY_FALLBACK_" + getStoreId(), visibility);
     appendShiftAudit(data, "休み希望掲示板公開設定変更", getStoreId(), null, { visibility: visibility });
     return createJsonDataResponse({ success: true, visibility: visibility });
   } catch (error) {
@@ -586,42 +542,15 @@ function deriveShiftPeriodEnd_(periodStart) {
 
 
 
-function getShiftManagementSettings() {
-  var p = PropertiesService.getScriptProperties();
-  var apiKey = p.getProperty("NOTION_API_KEY");
-  var databaseId = p.getProperty("NOTION_SHIFT_DATABASE_ID");
-  if (!apiKey || !databaseId) throw new Error("シフト管理DBの設定が未完了です。");
-  return { apiKey: apiKey, databaseId: databaseId };
-}
 
 
 
-/** シフト管理DBの全レコードを返します。 */
-/** シフト一覧の短時間キャッシュ（Notionから毎回読むと約2秒かかるため）。書き込み・初期化のたびに破棄する。 */
-function shiftsCacheKey_() { return "SHIFTS_" + (PropertiesService.getScriptProperties().getProperty("SHIFT_RESET_EPOCH") || "0"); }
-function readShiftsCache_() {
-  try { var raw = CacheService.getScriptCache().get(shiftsCacheKey_()); return raw ? JSON.parse(raw) : null; } catch (_) { return null; }
-}
-function writeShiftsCache_(shifts) {
-  try { var json = JSON.stringify(shifts); if (json.length < 90000) CacheService.getScriptCache().put(shiftsCacheKey_(), json, 120); } catch (_) {}
-}
-function invalidateShiftsCache_() { try { CacheService.getScriptCache().remove(shiftsCacheKey_()); } catch (_) {} }
 
+/** シフトシートの全行を返します（画面が使う形）。 */
 function getShifts(data) {
   try {
-    // doPostでログインセッションを確認済み。保存・削除系では接続キーも必須にする。
-    var shifts = readShiftsCache_();
-    if (!shifts) {
-      var settings = getShiftManagementSettings();
-      var pages = queryNotionDatabase(settings.apiKey, settings.databaseId, { page_size: 100 });
-      shifts = pages.map(function(page) {
-        var obj = flattenStatusProperties(page.properties || {});
-        obj.id = page.id;
-        return obj;
-      });
-      writeShiftsCache_(shifts);
-    }
-    return createJsonDataResponse({ success: true, shifts: overlayShiftPending_(shifts) });
+    var shifts = readShiftSheetRows_().map(function(item) { return item.flat; });
+    return createJsonDataResponse({ success: true, shifts: shifts });
   } catch (error) {
     console.error(error);
     return createJsonResponse(false, error.message || "シフトの取得エラーが発生しました。");
@@ -706,11 +635,11 @@ function reconcileShiftPaidLeaveForPeriod(periodStart, periodEnd, locked) {
     });
     changed = true;
   } else if (!matchingKeys.length) {
-    var settings = getShiftManagementSettings();
-    var pages = queryNotionDatabase(settings.apiKey, settings.databaseId, { filter: { and: [{ property: "日付", date: { on_or_after: periodStart } }, { property: "日付", date: { on_or_before: periodEnd } }] }, page_size: 100 });
     var wanted = {};
-    pages.forEach(function(page) {
-      var flat = flattenStatusProperties(page.properties || {});
+    readShiftSheetRows_().forEach(function(item) {
+      var flat = item.flat;
+      var date = flat["日付"].start;
+      if (date < periodStart || date > periodEnd) return;
       if (String(flat["シフト内容"] || "") !== "有休") return;
       var employeeId = String(flat["従業員ID"] || "");
       if (employeeId && balances[employeeId] && balances[employeeId].enabled) wanted[employeeId] = Number(wanted[employeeId] || 0) + 1;
@@ -752,13 +681,13 @@ function shiftAuthHash(value, salt) {
 
 
 
-/** 導入の自己診断：GASエディタでこの関数を実行すると、設定の抜けとNotionへのつながりを「実行ログ」に一覧で出します。値（キー・パスワード）は表示しません。何度実行しても安全です。 */
+/** 導入の自己診断：GASエディタでこの関数を実行すると、設定の抜けとスプレッドシートへのつながりを「実行ログ」に一覧で出します。値（キー・パスワード）は表示しません。何度実行しても安全です。 */
 function checkShiftSetup() {
   var p = PropertiesService.getScriptProperties();
   var lines = [];
   var ng = 0;
   function mark(ok, label, note) { if (!ok) ng++; lines.push((ok ? "OK   " : "NG   ") + label + (note ? "  … " + note : "")); }
-  ["NOTION_API_KEY", "NOTION_SHIFT_DATABASE_ID", "NOTION_SHIFT_REQUEST_DATABASE_ID", "NOTION_STORE_DATABASE_ID", "STORE_ID", "SHIFT_API_KEY"].forEach(function(key) {
+  ["STORE_ID", "SHIFT_API_KEY"].forEach(function(key) {
     mark(!!p.getProperty(key), key + "（スクリプトプロパティ）", p.getProperty(key) ? "" : "未設定です");
   });
   var keyValue = p.getProperty("SHIFT_API_KEY") || "";
@@ -766,14 +695,11 @@ function checkShiftSetup() {
   mark(!!p.getProperty("SHIFT_ADMIN_PASSWORD_HASH"), "管理者ログイン", p.getProperty("SHIFT_ADMIN_PASSWORD_HASH") ? "" : "configureShiftAdmin() を実行してください");
   mark(!!p.getProperty("SHIFT_EMPLOYEE_PASSWORD_HASH"), "従業員ログイン", p.getProperty("SHIFT_EMPLOYEE_PASSWORD_HASH") ? "" : "configureShiftEmployeeLogin() を実行してください");
   mark(!!p.getProperty("SHIFT_EMPLOYEE_MASTER_JSON"), "最初の操作員", p.getProperty("SHIFT_EMPLOYEE_MASTER_JSON") ? "" : "initializeShiftOperator() を実行してください");
-  var apiKey = p.getProperty("NOTION_API_KEY");
-  if (apiKey) {
-    [["NOTION_SHIFT_DATABASE_ID", "シフト管理DB"], ["NOTION_SHIFT_REQUEST_DATABASE_ID", "シフト希望届"], ["NOTION_STORE_DATABASE_ID", "店舗設定DB"]].forEach(function(pair) {
-      var id = p.getProperty(pair[0]);
-      if (!id) return;
-      try { requestNotion(apiKey, "https://api.notion.com/v1/databases/" + id, "get", null); mark(true, pair[1] + " にNotionからつながる"); }
-      catch (e) { mark(false, pair[1] + " にNotionからつながる", "つながりません。インテグレーションをこのDBに追加したか、IDが合っているか確認してください"); }
-    });
+  try {
+    shiftSheet_(); requestSheet_();
+    mark(true, "スプレッドシート（シフト・休み希望のシート）にアクセスできる");
+  } catch (e) {
+    mark(false, "スプレッドシート（シフト・休み希望のシート）にアクセスできる", String(e && e.message || e));
   }
   var summary = (ng === 0 ? "【すべてOK】導入の設定は整っています。" : "【要確認 " + ng + "件】NGの行を直して、もう一度実行してください。") + "\n" + lines.join("\n");
   Logger.log(summary);
@@ -1495,29 +1421,6 @@ function assertShiftLeavePeriod_(periodStart) {
 
 
 
-function syncShiftLeaveRequestToNotion(request, isNew) {
-  var p = PropertiesService.getScriptProperties();
-  var apiKey = p.getProperty("NOTION_API_KEY");
-  var databaseId = p.getProperty("NOTION_SHIFT_REQUEST_DATABASE_ID");
-  if (!apiKey || !databaseId || !request) return;
-  var databaseUrl = "https://api.notion.com/v1/databases/" + databaseId;
-  var schemaOk = p.getProperty("SHIFT_REQUEST_SCHEMA_OK") === databaseId;
-  var database = schemaOk ? { properties: {} } : requestNotion(apiKey, databaseUrl, "get", null);
-  var additions = {};
-  var schema = { "申請ID": { rich_text: {} }, "従業員ID": { rich_text: {} }, "氏名": { rich_text: {} }, "希望日": { date: {} }, "対象期間開始": { date: {} }, "対象期間終了": { date: {} }, "希望区分": { select: {} }, "コメント": { rich_text: {} }, "公開範囲": { select: {} }, "状態": { select: {} }, "提出日時": { date: {} }, "更新日時": { date: {} }, "希望開始時間": { rich_text: {} }, "希望終了時間": { rich_text: {} }, "却下理由": { rich_text: {} } };
-  if (!schemaOk) {
-    Object.keys(schema).forEach(function(name) { if (!database.properties || !database.properties[name]) additions[name] = schema[name]; });
-    if (Object.keys(additions).length) requestNotion(apiKey, databaseUrl, "patch", { properties: additions });
-    p.setProperty("SHIFT_REQUEST_SCHEMA_OK", databaseId);
-  }
-  var properties = { "記録名": createTitleProperty((request.date || request.periodStart) + " " + request.employeeName + " " + request.type), "申請ID": createRichTextProperty(request.id), "従業員ID": createRichTextProperty(request.employeeId || ""), "氏名": createRichTextProperty(request.employeeName), "希望日": request.date ? { date: { start: request.date } } : { date: null }, "対象期間開始": { date: { start: request.periodStart } }, "対象期間終了": { date: { start: request.periodEnd } }, "希望区分": { select: { name: request.type } }, "コメント": createRichTextProperty(request.comment || ""), "公開範囲": { select: { name: request.commentVisibility === "editors" ? "編集者のみ" : "全員" } }, "状態": { select: { name: request.status } }, "提出日時": { date: { start: request.submittedAt } }, "更新日時": { date: { start: request.updatedAt } } };
-  properties["希望開始時間"] = createRichTextProperty(request.desiredWorkStart || "");
-  properties["希望終了時間"] = createRichTextProperty(request.desiredWorkEnd || "");
-  properties["却下理由"] = createRichTextProperty(request.rejectionReason || "");
-  // 新しく作った申請（isNew）には、Notion側にまだ記録が無いので、探す手間（1回の通信）を省いて作るだけにする。
-  var existing = isNew ? [] : queryNotionDatabase(apiKey, databaseId, { filter: { property: "申請ID", rich_text: { equals: request.id } }, page_size: 1 });
-  if (existing.length) updateNotionPage(apiKey, existing[0].id, properties); else createNotionPage(apiKey, databaseId, properties);
-}
 
 
 
@@ -1628,7 +1531,7 @@ function saveShiftLeaveRequest(data) {
       requests.push(existing);
     }
     writeShiftLeaveRequestStore(periodStart, requests);
-    syncShiftLeaveRequestToNotion(existing, isNewRequest);
+    syncShiftLeaveRequestToSheet_(existing, isNewRequest);
     appendShiftAudit({ sessionToken: data.employeeToken }, "休み希望提出", existing.id, null, existing);
     return createJsonDataResponse({ success: true, request: existing });
   } catch (error) {
@@ -1663,7 +1566,7 @@ function cancelShiftLeaveRequest(data) {
     store.request.status = "取消";
     store.request.updatedAt = new Date().toISOString();
     writeShiftLeaveRequestStoreByKey_(store.key, store.items);
-    syncShiftLeaveRequestToNotion(store.request);
+    syncShiftLeaveRequestToSheet_(store.request);
     appendShiftAudit({ sessionToken: data.employeeToken }, "休み希望取消", store.request.id, null, store.request);
     return createJsonDataResponse({ success: true, request: store.request });
   } catch (error) {
@@ -1687,7 +1590,7 @@ function updateShiftLeaveRequestStatus(data) {
     store.request.rejectionReason = status === "却下" ? sanitizeText(data.rejectionReason || "", 300) : "";
     store.request.updatedAt = new Date().toISOString();
     writeShiftLeaveRequestStoreByKey_(store.key, store.items);
-    syncShiftLeaveRequestToNotion(store.request);
+    syncShiftLeaveRequestToSheet_(store.request);
     appendShiftAudit(data, "休み希望状態変更", store.request.id, null, store.request);
     return createJsonDataResponse({ success: true, request: store.request });
   } catch (error) {
@@ -1698,7 +1601,7 @@ function updateShiftLeaveRequestStatus(data) {
 
 
 
-/** 管理者が希望申請を削除します。Notion上の対応ページは復元可能なアーカイブにします。 */
+/** 管理者が希望申請を削除します。 */
 function deleteShiftLeaveRequest(data) {
   var lock = shiftLockHandle_();
   try {
@@ -1706,18 +1609,9 @@ function deleteShiftLeaveRequest(data) {
     verifyShiftApiKey(data.shiftApiKey);
     var store = findShiftLeaveRequestStore(sanitizeText(data.id, 100));
     var before = JSON.parse(JSON.stringify(store.request));
-    var p = PropertiesService.getScriptProperties();
-    var apiKey = p.getProperty("NOTION_API_KEY");
-    var databaseId = p.getProperty("NOTION_SHIFT_REQUEST_DATABASE_ID");
-    if (apiKey && databaseId) {
-      var pages = queryNotionDatabase(apiKey, databaseId, { filter: { property: "申請ID", rich_text: { equals: before.id } }, page_size: 10 });
-      pages.forEach(function(page) {
-        assertPageBelongsToDatabase(apiKey, page.id, databaseId);
-        requestNotion(apiKey, "https://api.notion.com/v1/pages/" + page.id, "patch", { archived: true });
-      });
-    }
     var remaining = store.items.filter(function(item) { return item.id !== before.id; });
     writeShiftLeaveRequestStoreByKey_(store.key, remaining);
+    removeShiftLeaveRequestFromSheet_(before.id);
     appendShiftAudit(data, "休み希望削除", before.id, before, null);
     return createJsonDataResponse({ success: true });
   } catch (error) {
@@ -1744,7 +1638,7 @@ function updateShiftLeaveRequestWorkTime(data) {
     item.desiredWorkEnd = end;
     item.updatedAt = new Date().toISOString();
     writeShiftLeaveRequestStoreByKey_(store.key, store.items);
-    syncShiftLeaveRequestToNotion(item);
+    syncShiftLeaveRequestToSheet_(item);
     appendShiftAudit({ sessionToken: data.employeeToken }, "出勤希望時間変更", item.id, null, item);
     return createJsonDataResponse({ success: true, request: item });
   } catch (error) {
@@ -1906,281 +1800,23 @@ function saveShiftCalendarPeriodSettings(data) {
 
 
 
-/** シフトDBの必要な列があるかの確認は、最初の1回だけ行います（毎回Notionへ問い合わせると保存が遅くなるため）。 */
-function ensureShiftSchema_(settings) {
-  var p = PropertiesService.getScriptProperties();
-  if (p.getProperty("SHIFT_SCHEMA_OK") === settings.databaseId) return;
-  ensureShiftEditorProperty(settings);
-  ensureShiftGlobalRemarkProperties(settings);
-  ensureShiftEmployeeIdProperty(settings);
-  p.setProperty("SHIFT_SCHEMA_OK", settings.databaseId);
-}
 
 
 
-/** シフトDBに監査用の最終更新者プロパティがなければ追加します。 */
-function ensureShiftEditorProperty(settings) {
-  var databaseUrl = "https://api.notion.com/v1/databases/" + settings.databaseId;
-  var database = requestNotion(settings.apiKey, databaseUrl, "get", null);
-  if (!database.properties || !database.properties["最終更新者氏名"]) {
-    requestNotion(settings.apiKey, databaseUrl, "patch", {
-      properties: { "最終更新者氏名": { rich_text: {} } }
-    });
-  }
-}
 
 
 
-/** 全体補足（帯色を含む）をシフトDBへ保存するプロパティがなければ追加します。 */
-function ensureShiftGlobalRemarkProperties(settings) {
-  var databaseUrl = "https://api.notion.com/v1/databases/" + settings.databaseId;
-  var database = requestNotion(settings.apiKey, databaseUrl, "get", null);
-  var additions = {};
-  if (!database.properties || !database.properties["全体補足種別"]) additions["全体補足種別"] = { rich_text: {} };
-  if (!database.properties || !database.properties["全体補足内容"]) additions["全体補足内容"] = { rich_text: {} };
-  if (Object.keys(additions).length) {
-    requestNotion(settings.apiKey, databaseUrl, "patch", { properties: additions });
-  }
-}
 
 
 
-function ensureShiftEmployeeIdProperty(settings) {
-  var databaseUrl = "https://api.notion.com/v1/databases/" + settings.databaseId;
-  var database = requestNotion(settings.apiKey, databaseUrl, "get", null);
-  if (!database.properties || !database.properties["従業員ID"]) requestNotion(settings.apiKey, databaseUrl, "patch", { properties: { "従業員ID": { rich_text: {} } } });
-}
 
 
 
-/**
- * 表示中の1か月分を1回のリクエストで受け取り、Notionへ差分だけ反映します。
- * - 値がある行: 新規作成または変更時だけ更新
- * - 全項目が空の行: 既存ページがある場合だけアーカイブ
- * - 変更なし: Notion APIへの書き込みなし
- */
-/** Notionへの書き込み（作成・更新・アーカイブ）を3件ずつ同時に送ります。混雑(429)・一時エラーは間をあけて再試行します。 */
-function runNotionBatch_(apiKey, ops) {
-  var pending = ops.map(function(op, index) {
-    var isCreate = op.url === "https://api.notion.com/v1/pages";
-    return { index: index, request: {
-      url: op.url,
-      method: isCreate ? "post" : "patch",
-      contentType: "application/json",
-      headers: { Authorization: "Bearer " + apiKey, "Notion-Version": "2022-06-28" },
-      payload: JSON.stringify(op.body),
-      muteHttpExceptions: true
-    } };
-  });
-  var CHUNK = 3;
-  var attempt = 0;
-  while (pending.length) {
-    var retry = [];
-    var lastError = "";
-    for (var start = 0; start < pending.length; start += CHUNK) {
-      var chunk = pending.slice(start, start + CHUNK);
-      var responses = UrlFetchApp.fetchAll(chunk.map(function(item) { return item.request; }));
-      responses.forEach(function(response, k) {
-        var code = response.getResponseCode();
-        if (code >= 200 && code < 300) return;
-        if (code === 429 || code >= 500) { retry.push(chunk[k]); return; }
-        var message = response.getContentText();
-        try { message = JSON.parse(message).message || message; } catch (_) {}
-        lastError = "Notion API Error: " + message;
-      });
-      if (lastError) throw new Error(lastError);
-      Utilities.sleep(150);
-    }
-    if (!retry.length) break;
-    attempt++;
-    if (attempt > 5) throw new Error("Notionが混み合っていて保存を完了できませんでした。少し待ってからもう一度お試しください。");
-    Utilities.sleep(1500 * attempt);
-    pending = retry;
-  }
-}
 
-/** 行をNotionへ書き込む本体（保存・溜まった分の反映の両方で使う）。 */
-function applyShiftRowsToNotion_(settings, incomingRows, periodStart, periodEnd, updatedBy, partial, timing, timingStart) {
-    // 対象期間を最初に1回だけ読み込み、社員名＋日付で索引化します。
-    // 変更分だけが送られてきたとき（partial）は、その日付の行だけをNotionから読む（期間全体を読むより速い）。
-    var queryFilter = {
-      and: [
-        { property: "日付", date: { on_or_after: periodStart } },
-        { property: "日付", date: { on_or_before: periodEnd } }
-      ]
-    };
-    if (partial === true && incomingRows.length > 0 && incomingRows.length <= 60) {
-      var distinctDates = {};
-      incomingRows.forEach(function(row) { distinctDates[sanitizeDateValue(row["日付"])] = true; });
-      var dateList = Object.keys(distinctDates).filter(function(value) { return value; });
-      if (dateList.length > 0 && dateList.length <= 30) {
-        queryFilter = { or: dateList.map(function(value) { return { property: "日付", date: { equals: value } }; }) };
-      }
-    }
-    var existingPages = queryNotionDatabase(settings.apiKey, settings.databaseId, {
-      filter: queryFilter,
-      page_size: 100
-    });
-    timing.queryMs = Date.now() - timingStart;
-    var existingByKey = {};
-    existingPages.forEach(function(page) {
-      var flat = flattenStatusProperties(page.properties || {});
-      var employee = String(flat["社員名"] || "");
-      var employeeId = String(flat["従業員ID"] || "");
-      var dateObj = flat["日付"];
-      var date = dateObj && dateObj.start ? String(dateObj.start).slice(0, 10) : "";
-      if (!employee || !date) return;
-      var key = (employeeId || employee) + "|" + date;
-      if (!existingByKey[key]) existingByKey[key] = [];
-      existingByKey[key].push({ page: page, flat: flat });
-      if (employeeId) {
-        var legacyKey = employee + "|" + date;
-        if (!existingByKey[legacyKey]) existingByKey[legacyKey] = existingByKey[key];
-      }
-    });
 
-    var created = 0;
-    var updated = 0;
-    var cleared = 0;
-    var unchanged = 0;
-    var seen = {};
-    var notionOps = [];
-
-    incomingRows.forEach(function(rawRow) {
-      var employeeName = sanitizeText(rawRow["社員名"], 100);
-      var employeeId = sanitizeText(rawRow["従業員ID"], 100);
-      var dateValue = sanitizeDateValue(rawRow["日付"]);
-      if (!employeeName || !dateValue || dateValue < periodStart || dateValue > periodEnd) {
-        throw new Error("月次シフト内に不正な社員名または日付があります。");
-      }
-      var key = (employeeId || employeeName) + "|" + dateValue;
-      if (seen[key]) throw new Error("同じ社員・日付のシフトが重複しています。");
-      seen[key] = true;
-
-      var shiftContent = sanitizeText(rawRow["シフト内容"], 200);
-      var breakTime = sanitizeText(rawRow["休憩時間"], 50);
-      var workTime = sanitizeText(rawRow["実働時間"], 50);
-      var note = sanitizeText(rawRow["備考"], 500);
-      var globalRemarkType = sanitizeText(rawRow["全体補足種別"], 100);
-      var globalRemarkText = sanitizeText(rawRow["全体補足内容"], 500);
-      // 休憩・実働の初期値（0:00）だけでは空ページを作りません。
-      var hasContent = Boolean(shiftContent || note || globalRemarkType || globalRemarkText);
-      var matches = existingByKey[key] || existingByKey[employeeName + "|" + dateValue] || [];
-
-      // 空欄は新規ページを作らず、既存ページだけをアーカイブします。
-      if (!hasContent) {
-        matches.forEach(function(match) {
-          notionOps.push({ url: "https://api.notion.com/v1/pages/" + match.page.id, body: { archived: true } });
-          cleared++;
-        });
-        if (!matches.length) unchanged++;
-        return;
-      }
-
-      var properties = {
-        "記録名": createTitleProperty(dateValue + " " + employeeName),
-        "社員名": createRichTextProperty(employeeName),
-        "従業員ID": createRichTextProperty(employeeId),
-        "日付": { date: { start: dateValue } },
-        "シフト内容": createRichTextProperty(shiftContent),
-        "休憩時間": createRichTextProperty(breakTime),
-        "実働時間": createRichTextProperty(workTime),
-        "備考": createRichTextProperty(note),
-        "全体補足種別": createRichTextProperty(globalRemarkType),
-        "全体補足内容": createRichTextProperty(globalRemarkText),
-        "最終更新者氏名": createRichTextProperty(rawRow._u ? sanitizeText(rawRow._u, 100) : updatedBy)
-      };
-
-      if (!matches.length) {
-        notionOps.push({ url: "https://api.notion.com/v1/pages", body: { parent: { database_id: settings.databaseId }, properties: properties } });
-        created++;
-        return;
-      }
-
-      var current = matches[0].flat;
-      var isChanged =
-        String(current["社員名"] || "") !== employeeName ||
-        String(current["シフト内容"] || "") !== shiftContent ||
-        String(current["休憩時間"] || "") !== breakTime ||
-        String(current["実働時間"] || "") !== workTime ||
-        String(current["備考"] || "") !== note ||
-        String(current["全体補足種別"] || "") !== globalRemarkType ||
-        String(current["全体補足内容"] || "") !== globalRemarkText;
-      if (isChanged) {
-        notionOps.push({ url: "https://api.notion.com/v1/pages/" + matches[0].page.id, body: { properties: properties } });
-        updated++;
-      } else {
-        unchanged++;
-      }
-
-      // 過去の不具合等で同じ社員・日付が重複していた場合は1件へ整理します。
-      for (var i = 1; i < matches.length; i++) {
-        notionOps.push({ url: "https://api.notion.com/v1/pages/" + matches[i].page.id, body: { archived: true } });
-        cleared++;
-      }
-    });
-
-    timing.diffMs = Date.now() - timingStart;
-    runNotionBatch_(settings.apiKey, notionOps);
-    return { created: created, updated: updated, cleared: cleared, unchanged: unchanged };
-}
-
-var SHIFT_PENDING_KEY_ = "SHIFT_PENDING_JSON";
-
-/** Notionへの反映待ちの行（サーバー側の控え）。Notionへの書き込みを裏に回すため、ここに先に保存します。 */
-function readShiftPending_() {
-  try {
-    var o = JSON.parse(PropertiesService.getScriptProperties().getProperty(SHIFT_PENDING_KEY_) || "null");
-    if (o && o.rows && typeof o.rows === "object") return o;
-  } catch (_) {}
-  return { rows: {}, lastError: "", lastErrorAt: "" };
-}
-function writeShiftPending_(state) {
-  var p = PropertiesService.getScriptProperties();
-  if (!Object.keys(state.rows).length) { p.deleteProperty(SHIFT_PENDING_KEY_); return true; }
-  var json = JSON.stringify(state);
-  if (json.length > 8000) return false;
-  p.setProperty(SHIFT_PENDING_KEY_, json);
-  return true;
-}
-function shiftPendingRowKey_(row) { return (String(row["従業員ID"] || "") || String(row["社員名"] || "")) + "|" + String(row["日付"] || ""); }
-function normalizeShiftRow_(rawRow, periodStart, periodEnd, updatedBy) {
-  var employeeName = sanitizeText(rawRow["社員名"], 100);
-  var dateValue = sanitizeDateValue(rawRow["日付"]);
-  if (!employeeName || !dateValue || dateValue < periodStart || dateValue > periodEnd) throw new Error("月次シフト内に不正な社員名または日付があります。");
-  return {
-    "社員名": employeeName, "従業員ID": sanitizeText(rawRow["従業員ID"], 100), "日付": dateValue,
-    "シフト内容": sanitizeText(rawRow["シフト内容"], 200), "休憩時間": sanitizeText(rawRow["休憩時間"], 50), "実働時間": sanitizeText(rawRow["実働時間"], 50),
-    "備考": sanitizeText(rawRow["備考"], 500), "全体補足種別": sanitizeText(rawRow["全体補足種別"], 100), "全体補足内容": sanitizeText(rawRow["全体補足内容"], 500),
-    _u: updatedBy
-  };
-}
-/** 反映待ちの行を、Notionから読んだ一覧に重ねる（別の端末にも、保存した内容がすぐ見えるように）。 */
-function overlayShiftPending_(shifts) {
-  var state = readShiftPending_();
-  var keys = Object.keys(state.rows);
-  if (!keys.length) return shifts;
-  var drop = {};
-  keys.forEach(function(k) { var r = state.rows[k]; drop[k] = true; drop[String(r["社員名"]) + "|" + String(r["日付"])] = true; });
-  var kept = shifts.filter(function(sh) {
-    var d = sh["日付"] && sh["日付"].start ? String(sh["日付"].start).slice(0, 10) : "";
-    var name = String(sh["社員名"] || ""), id = String(sh["従業員ID"] || "");
-    return !(d && (drop[(id || name) + "|" + d] || drop[name + "|" + d]));
-  });
-  keys.forEach(function(k) {
-    var r = state.rows[k];
-    if (!(r["シフト内容"] || r["備考"] || r["全体補足種別"] || r["全体補足内容"])) return;
-    kept.push({ id: "pending-" + k, "社員名": r["社員名"], "従業員ID": r["従業員ID"], "日付": { start: r["日付"] }, "シフト内容": r["シフト内容"], "休憩時間": r["休憩時間"], "実働時間": r["実働時間"], "備考": r["備考"], "全体補足種別": r["全体補足種別"], "全体補足内容": r["全体補足内容"], "最終更新者氏名": r._u });
-  });
-  return kept;
-}
-/** 反映待ちの状態（件数・いちばん古い時刻・直近のエラー）。画面の警告表示に使う。 */
+/** （互換用）以前は反映待ちの件数を返していました。スプレッドシート保存では保存と同時に反映されるため、常に0件です。 */
 function getShiftPendingStatus(data) {
-  var state = readShiftPending_();
-  var keys = Object.keys(state.rows);
-  var oldest = "";
-  keys.forEach(function(k) { var q = state.rows[k]._q || ""; if (q && (!oldest || q < oldest)) oldest = q; });
-  return createJsonDataResponse({ success: true, count: keys.length, oldestAt: oldest, lastError: state.lastError || "", lastErrorAt: state.lastErrorAt || "" });
+  return createJsonDataResponse({ success: true, count: 0, oldestAt: "", lastError: "", lastErrorAt: "" });
 }
 // ---------- エラー記録（画面で起きたエラーを、管理者が設定で見られるようにする） ----------
 var SHIFT_ERROR_LOG_KEY_ = "SHIFT_ERROR_LOG_JSON";
@@ -2220,39 +1856,12 @@ function clearShiftErrorLog(data) {
   catch (error) { return createJsonResponse(false, error.message || "消去できませんでした。"); }
 }
 
-/** 溜まっている行を、Notionへ書き込む。失敗したら溜めたまま残し、エラーを記録する。 */
+/** （互換用）反映待ちはありません。 */
 function flushShiftPending(data) {
-  var timingStart = Date.now();
-  var timing = {};
-  var lock = shiftLockHandle_();
   try {
     verifyShiftApiKey(data.shiftApiKey);
-    if (!lock.tryLock(30000)) throw new Error("別の保存処理を実行中です。少し待ってから再度お試しください。");
-    var state = readShiftPending_();
-    var keys = Object.keys(state.rows);
-    if (!keys.length) return createJsonDataResponse({ success: true, written: 0, pending: 0 });
-    try {
-      var settings = getShiftManagementSettings();
-      ensureShiftSchema_(settings);
-      var rows = keys.map(function(k) { return state.rows[k]; });
-      var dates = rows.map(function(r) { return r["日付"]; }).sort();
-      var applied = applyShiftRowsToNotion_(settings, rows, dates[0], dates[dates.length - 1], "", true, timing, timingStart);
-      invalidateShiftsCache_();
-      PropertiesService.getScriptProperties().deleteProperty(SHIFT_PENDING_KEY_);
-      appendShiftAudit(data, "月次シフト保存(反映)", dates[0] + "〜" + dates[dates.length - 1], null, applied);
-      return createJsonDataResponse({ success: true, written: keys.length, pending: 0, created: applied.created, updated: applied.updated, cleared: applied.cleared, timing: timing });
-    } catch (error) {
-      state.lastError = String(error && error.message || error).slice(0, 200);
-      state.lastErrorAt = new Date().toISOString();
-      writeShiftPending_(state);
-      throw error;
-    }
-  } catch (error) {
-    console.error(error);
-    return createJsonResponse(false, error.message || "Notionへの反映に失敗しました。");
-  } finally {
-    try { lock.releaseLock(); } catch (ignore) {}
-  }
+    return createJsonDataResponse({ success: true, written: 0, pending: 0 });
+  } catch (error) { return createJsonResponse(false, error.message || "反映に失敗しました。"); }
 }
 
 function saveShiftMonth(data) {
@@ -2282,57 +1891,26 @@ function saveShiftMonth(data) {
       });
     }
 
-    var settings = getShiftManagementSettings();
     var updatedBy = sanitizeText(data.updatedBy, 100).trim();
     if (!updatedBy) throw new Error("保存者名が指定されていません。");
-    ensureShiftSchema_(settings);
     var periodStart = sanitizeDateValue(data.periodStart);
     var periodEnd = sanitizeDateValue(data.periodEnd);
     var incomingRows = Array.isArray(data.shifts) ? data.shifts : [];
     if (!periodStart || !periodEnd || periodStart > periodEnd) throw new Error("保存期間が正しくありません。");
-    if (incomingRows.length > 500) throw new Error("一度に保存できる件数は500件までです。");
+    if (incomingRows.length > 2000) throw new Error("一度に保存できる件数は2000件までです。");
 
-    // 反映待ちの行が残っているときは、新しい保存分と合わせてNotionへ書く（古い内容で上書きしないため）。
-    var pendingState = readShiftPending_();
-    var pendingKeys = Object.keys(pendingState.rows);
-    var normalizedIncoming = incomingRows.map(function(row) { var n = normalizeShiftRow_(row, periodStart, periodEnd, updatedBy); n._q = new Date().toISOString(); return n; });
-    var seenKeys = {};
-    normalizedIncoming.forEach(function(row) { var k = shiftPendingRowKey_(row); if (seenKeys[k]) throw new Error("同じ社員・日付のシフトが重複しています。"); seenKeys[k] = true; });
-    if (data.defer === true && normalizedIncoming.length > 0) {
-      // 先にサーバー内の控えへ保存して、すぐ返事をする。Notionへの書き込みは、このあとの「反映」で行う。
-      normalizedIncoming.forEach(function(row) { pendingState.rows[shiftPendingRowKey_(row)] = row; });
-      if (writeShiftPending_(pendingState)) {
-        timing.totalMs = Date.now() - timingStart;
-        return createJsonDataResponse({ success: true, queued: true, pending: Object.keys(pendingState.rows).length, timing: timing, message: "保存しました（Notionへ反映中）。" });
-      }
-      normalizedIncoming.forEach(function(row) { delete pendingState.rows[shiftPendingRowKey_(row)]; });
-    }
-    if (pendingKeys.length) {
-      var mergedRows = {};
-      pendingKeys.forEach(function(k) { mergedRows[k] = pendingState.rows[k]; });
-      normalizedIncoming.forEach(function(row) { mergedRows[shiftPendingRowKey_(row)] = row; });
-      incomingRows = Object.keys(mergedRows).map(function(k) { return mergedRows[k]; });
-      var mergedDates = incomingRows.map(function(r) { return r["日付"]; }).sort();
-      periodStart = mergedDates[0] < periodStart ? mergedDates[0] : periodStart;
-      periodEnd = mergedDates[mergedDates.length - 1] > periodEnd ? mergedDates[mergedDates.length - 1] : periodEnd;
-      data.partial = true;
-    }
-
-    var applied = applyShiftRowsToNotion_(settings, incomingRows, periodStart, periodEnd, updatedBy, data.partial === true, timing, timingStart);
-    var created = applied.created, updated = applied.updated, cleared = applied.cleared, unchanged = applied.unchanged;
+    var applied = applyShiftRowsToSheet_(incomingRows, periodStart, periodEnd, updatedBy);
     timing.writeMs = Date.now() - timingStart;
-    invalidateShiftsCache_();
-    if (pendingKeys.length) PropertiesService.getScriptProperties().deleteProperty(SHIFT_PENDING_KEY_);
-    appendShiftAudit(data, "月次シフト保存", periodStart + "〜" + periodEnd, null, { created: created, updated: updated, cleared: cleared, unchanged: unchanged });
+    appendShiftAudit(data, "月次シフト保存", periodStart + "〜" + periodEnd, null, applied);
     timing.totalMs = Date.now() - timingStart;
     return createJsonDataResponse({
       timing: timing,
       success: true,
       message: "月次シフトを保存しました。",
-      created: created,
-      updated: updated,
-      cleared: cleared,
-      unchanged: unchanged
+      created: applied.created,
+      updated: applied.updated,
+      cleared: applied.cleared,
+      unchanged: applied.unchanged
     });
   } catch (error) {
     console.error(error);
@@ -2352,21 +1930,12 @@ function readShiftPeriodStatusForCorrection(periodStart) {
 
 
 
-/** 既存の店舗設定DBに訂正依頼の公開範囲を保存します。 */
+/** 訂正依頼の公開範囲を返します（未設定なら全員に表示）。 */
 function getShiftCorrectionVisibility(data) {
   try {
     requireShiftSession(data.sessionToken);
-    var p = PropertiesService.getScriptProperties();
-    var storedVisibility = p.getProperty("SHIFT_CORRECTION_VISIBILITY_" + getStoreId());
-    if (storedVisibility === "all" || storedVisibility === "private") return createJsonDataResponse({ success: true, visibility: storedVisibility });
-    var fallback = storedVisibility || "all";
-    var apiKey = p.getProperty("NOTION_API_KEY"), dbId = p.getProperty("NOTION_STORE_DATABASE_ID");
-    if (!apiKey || !dbId) return createJsonDataResponse({ success: true, visibility: fallback });
-    var rows = queryNotionDatabase(apiKey, dbId, { filter: { property: "店舗ID", rich_text: { equals: getStoreId() } }, page_size: 1 });
-    var label = rows.length ? statusPageToObject(rows[0])["訂正依頼公開設定"] : "";
-    var resolvedVisibility = label === "全員に表示" ? "all" : label === "本人と管理者のみ" ? "private" : (fallback === "private" ? "private" : "all");
-    p.setProperty("SHIFT_CORRECTION_VISIBILITY_" + getStoreId(), resolvedVisibility);
-    return createJsonDataResponse({ success: true, visibility: resolvedVisibility });
+    var stored = PropertiesService.getScriptProperties().getProperty("SHIFT_CORRECTION_VISIBILITY_" + getStoreId());
+    return createJsonDataResponse({ success: true, visibility: stored === "private" ? "private" : "all" });
   } catch (error) { return createJsonResponse(false, error.message || "公開設定を取得できませんでした。"); }
 }
 
@@ -2378,18 +1947,7 @@ function saveShiftCorrectionVisibility(data) {
     var visibility = data.visibility;
     if (visibility !== "all" && visibility !== "private") throw new Error("公開設定が正しくありません。");
     return withShiftLock_(function() {
-      var p = PropertiesService.getScriptProperties();
-      var apiKey = p.getProperty("NOTION_API_KEY"), dbId = p.getProperty("NOTION_STORE_DATABASE_ID");
-      var label = visibility === "all" ? "全員に表示" : "本人と管理者のみ";
-      if (apiKey && dbId) {
-        var url = "https://api.notion.com/v1/databases/" + dbId;
-        var db = requestNotion(apiKey, url, "get", null);
-        if (!db.properties || !db.properties["訂正依頼公開設定"]) requestNotion(apiKey, url, "patch", { properties: { "訂正依頼公開設定": { select: { options: [{ name: "全員に表示" }, { name: "本人と管理者のみ" }] } } } });
-        var rows = queryNotionDatabase(apiKey, dbId, { filter: { property: "店舗ID", rich_text: { equals: getStoreId() } }, page_size: 1 });
-        if (rows.length) updateNotionPage(apiKey, rows[0].id, { "訂正依頼公開設定": { select: { name: label } } });
-        else createNotionPage(apiKey, dbId, { "店舗名": createTitleProperty("店舗名を設定"), "店舗ID": createRichTextProperty(getStoreId()), "訂正依頼公開設定": { select: { name: label } } });
-      }
-      p.setProperty("SHIFT_CORRECTION_VISIBILITY_" + getStoreId(), visibility);
+      PropertiesService.getScriptProperties().setProperty("SHIFT_CORRECTION_VISIBILITY_" + getStoreId(), visibility);
       appendShiftAudit(data, "訂正依頼公開設定変更", getStoreId(), null, { visibility: visibility });
       return createJsonDataResponse({ success: true, visibility: visibility });
     });
@@ -2410,68 +1968,42 @@ function initializeShiftOperator() {
 }
 
 
-/** GAS管理者が許可した3DB以外に向いたGASでは初期化を一切受け付けない。 */
+/** 初期化は、スクリプトプロパティ SHIFT_RESET_ALLOWED_SHEET_ID にこのスプレッドシートのIDを入れた配布元用の控えだけで許可します（本番の店舗を誤って消さないための安全装置）。 */
 function assertTemplateResetTarget() {
   var p = PropertiesService.getScriptProperties();
-  // 既存の複製版は従来の安全装置を維持。新店舗はGAS側で許可DBを明示する。
-  var defaultExpected = {
-    NOTION_SHIFT_DATABASE_ID: "665ef4863f6040e9b542586083764148",
-    NOTION_SHIFT_REQUEST_DATABASE_ID: "a4d434ce8dbc4e9d860167971c631738",
-    NOTION_STORE_DATABASE_ID: "23de2613332d4ef3b809d21006cec516"
-  };
-  var configured = p.getProperty("SHIFT_RESET_ALLOWED_DB_IDS");
-  var expected = configured ? JSON.parse(configured) : defaultExpected;
-  Object.keys(defaultExpected).forEach(function(key) {
-    if (!expected[key] || normalizeNotionId(p.getProperty(key)) !== normalizeNotionId(expected[key])) {
-      throw new Error("複製用DBの設定が一致しません。初期化できません。");
-    }
-  });
-  if (!p.getProperty("NOTION_API_KEY")) throw new Error("Notion接続が未設定です。");
+  var allowed = p.getProperty("SHIFT_RESET_ALLOWED_SHEET_ID");
+  if (!allowed || allowed !== ss_().getId()) throw new Error("このスプレッドシートは初期化を許可されていません。初期化できません。");
   return p;
 }
 
-/** 複製用DBだけの旧備考欄を消す。シフトや申請は変更しない。1回最大25ページ。 */
+/** 配布元用のシートだけ、旧備考欄を消す。シフトや申請は変更しない。 */
 function clearTemplateShiftRemarks(data) {
   try {
     requireShiftSession(data.sessionToken, "admin"); verifyShiftApiKey(data.shiftApiKey);
     var p = assertTemplateResetTarget();
-    var apiKey = p.getProperty("NOTION_API_KEY"), dbId = p.getProperty("NOTION_SHIFT_DATABASE_ID");
-    var rows = queryNotionDatabase(apiKey, dbId, { page_size: 100 });
-    var targets = rows.filter(function(page) {
-      var row = statusPageToObject(page);
-      return String(row["備考"] || row["全体補足種別"] || row["全体補足内容"] || "").trim() !== "";
-    });
-    if (data.preview === true) return createJsonDataResponse({ success: true, count: targets.length, cleared: 0 });
-    targets.slice(0, 25).forEach(function(page) {
-      updateNotionPage(apiKey, page.id, {
-        "備考": createRichTextProperty(""),
-        "全体補足種別": createRichTextProperty(""),
-        "全体補足内容": createRichTextProperty("")
-      });
-    });
-    invalidateShiftsCache_();
+    var sheet = shiftSheet_();
+    var last = sheet.getLastRow();
+    var values = last >= 2 ? sheet.getRange(2, 1, last - 1, SHIFT_SHEET_HEADERS_.length).getValues() : [];
+    var count = 0;
+    values.forEach(function(v) { if ((cellText_(v[6]) + cellText_(v[7]) + cellText_(v[8])).trim() !== "") count++; });
+    if (data.preview === true) return createJsonDataResponse({ success: true, count: count, cleared: 0 });
+    values.forEach(function(v) { v[6] = ""; v[7] = ""; v[8] = ""; });
+    if (values.length) sheet.getRange(2, 1, values.length, SHIFT_SHEET_HEADERS_.length).setValues(values);
     p.deleteProperty("SHIFT_DROPDOWN_MASTER_JSON");
-    return createJsonDataResponse({ success: true, cleared: Math.min(targets.length, 25), remaining: Math.max(0, targets.length - 25) });
+    return createJsonDataResponse({ success: true, cleared: count, remaining: 0 });
   } catch (error) { return createJsonResponse(false, error.message || "古い備考を削除できませんでした。"); }
 }
 
-function templateResetDatabases(p) {
-  return [
-    { key: "NOTION_SHIFT_DATABASE_ID", label: "シフト" },
-    { key: "NOTION_SHIFT_REQUEST_DATABASE_ID", label: "希望届" },
-    { key: "NOTION_STORE_DATABASE_ID", label: "店舗設定" }
-  ];
-}
 
 function previewTemplateReset(data) {
   try {
     var session = requireShiftSession(data.sessionToken, "admin");
     verifyShiftApiKey(data.apiKey);
     var p = assertTemplateResetTarget();
-    var dbs = templateResetDatabases(p);
-    var counts = dbs.map(function(db) {
-      return { label: db.label, count: queryNotionDatabase(p.getProperty("NOTION_API_KEY"), p.getProperty(db.key), { page_size: 100 }).length };
-    });
+    var counts = [
+      { label: "シフト", count: Math.max(0, shiftSheet_().getLastRow() - 1) },
+      { label: "希望届", count: Math.max(0, requestSheet_().getLastRow() - 1) }
+    ];
     var operator = normalizeShiftEmployeeMaster(readShiftEmployeeMaster()).filter(function(item) {
       return item.id === session.employeeId && item.active;
     })[0];
@@ -2497,21 +2029,10 @@ function getTemplateResetStatus(data) {
   } catch (error) { return createJsonResponse(false, error.message || "初期化の進行状況を確認できませんでした。"); }
 }
 
-function retryTemplateResetNotion(operation) {
-  for (var attempt = 0; attempt < 3; attempt++) {
-    try { return operation(); }
-    catch (error) {
-      var message = String(error && error.message || error);
-      if (attempt === 2 || !/(?:\b429\b|\b500\b|\b502\b|\b503\b|\b504\b)/.test(message)) throw error;
-      Utilities.sleep(700 * Math.pow(2, attempt));
-    }
-  }
-}
 
 function runTemplateReset(data) {
   var lock = shiftLockHandle_();
-  invalidateShiftsCache_();
-  var p, authorization, archived = 0, checkpointed = false;
+  var p, authorization, archived = 0;
   try {
     if (!lock.tryLock(10000)) throw new Error("別の処理中です。少し待って再試行してください。");
     var session = requireShiftSession(data.sessionToken, "admin");
@@ -2521,36 +2042,20 @@ function runTemplateReset(data) {
     if (!authorization || authorization.token !== data.token ||
         authorization.operator.id !== session.employeeId || authorization.expiresAt <= Date.now() ||
         data.confirmation !== "初期化") throw new Error("確認が無効です。対象を再確認してください。");
-    var apiKey = p.getProperty("NOTION_API_KEY");
-    var remaining = 0;
-    var budget = 20;
-    templateResetDatabases(p).forEach(function(db) {
-      var rows = retryTemplateResetNotion(function() {
-        return queryNotionDatabase(apiKey, p.getProperty(db.key), { page_size: Math.min(budget + 1, 100) });
-      });
-      var selected = rows.slice(0, budget);
-      selected.forEach(function(page) {
-        retryTemplateResetNotion(function() {
-          return requestNotion(apiKey, "https://api.notion.com/v1/pages/" + page.id, "patch", { archived: true });
-        });
-        archived++;
-      });
-      budget -= selected.length;
-      remaining += rows.length - selected.length;
+    // シフトと希望届のシートを、見出しだけ残して空にする。
+    [shiftSheet_(), requestSheet_()].forEach(function(sheet) {
+      var last = sheet.getLastRow();
+      if (last >= 2) {
+        archived += last - 1;
+        sheet.getRange(2, 1, last - 1, sheet.getLastColumn()).clearContent();
+      }
     });
-    authorization.archived = (Number(authorization.archived) || 0) + archived;
-    authorization.expiresAt = Date.now() + 60 * 60 * 1000;
-    p.setProperty("SHIFT_TEMPLATE_RESET_AUTH", JSON.stringify(authorization));
-    checkpointed = true;
-    // 次のバッチで最終確認を行う。失敗時は同じ確認トークンで安全に再試行できる。
-    if (budget === 0 || remaining > 0) {
-      return createJsonDataResponse({ success: true, done: false, archived: archived });
-    }
+    SpreadsheetApp.flush();
     var businessKeys = [
       "SHIFT_CYCLE_MASTER_JSON", "SHIFT_AUTO_DRAFT_SETTINGS_JSON", "SHIFT_SPECIAL_DAY_RULES_JSON", "SHIFT_STAFFING_RULES_JSON",
       "SHIFT_WORK_TIME_MASTER_" + getStoreId(),
       "SHIFT_CALENDAR_PERIOD_JSON", "SHIFT_PERIOD_STATUSES_JSON", "SHIFT_PAID_LEAVE_BALANCES_JSON",
-      "SHIFT_PAID_LEAVE_LEDGER_JSON", "SHIFT_AUDIT_LOG_JSON", "SHIFT_PENDING_JSON", "SHIFT_ERROR_LOG_JSON",
+      "SHIFT_PAID_LEAVE_LEDGER_JSON", "SHIFT_AUDIT_LOG_JSON", "SHIFT_ERROR_LOG_JSON",
       "SHIFT_BOARD_VISIBILITY_FALLBACK_" + getStoreId(),
       "SHIFT_CORRECTION_VISIBILITY_" + getStoreId(),
       "SHIFT_STORE_SETTINGS_JSON"
@@ -2576,11 +2081,6 @@ function runTemplateReset(data) {
     p.setProperty("SHIFT_RESET_EPOCH", String(Date.now()));
     return createJsonDataResponse({ success: true, done: true, archived: archived });
   } catch (error) {
-    if (p && authorization && archived > 0 && !checkpointed) {
-      authorization.archived = (Number(authorization.archived) || 0) + archived;
-      authorization.expiresAt = Date.now() + 60 * 60 * 1000;
-      p.setProperty("SHIFT_TEMPLATE_RESET_AUTH", JSON.stringify(authorization));
-    }
     return createJsonResponse(false, error.message || "初期化に失敗しました。");
   } finally { if (lock.hasLock()) lock.releaseLock(); }
 }

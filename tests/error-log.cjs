@@ -22,6 +22,6 @@ session=null;assert.equal(ctx.logShiftClientError({sessionToken:'',message:'bad'
 session={role:'admin'};assert.equal(ctx.clearShiftErrorLog({shiftApiKey:'k'}).success,true);assert.equal(ctx.getShiftErrorLog({}).errors.length,0);
 console.log('PASS: error log (record, dedupe, cap, auth, clear)');
 // 6. 導入の自己診断：値を出さずに、抜けを一覧する
-props.NOTION_API_KEY='SECRET-VALUE';ctx.requestNotion=()=>{throw new Error('x')};
-const out=ctx.checkShiftSetup();assert.match(out,/要確認/);assert.ok(!out.includes('SECRET-VALUE'));assert.match(out,/NG\s+SHIFT_API_KEY/);
+props.SHIFT_API_KEY='SECRET-VALUE';ctx.SpreadsheetApp={getActiveSpreadsheet:()=>{throw new Error('no sheet')}};
+const out=ctx.checkShiftSetup();assert.match(out,/要確認/);assert.ok(!out.includes('SECRET-VALUE'));assert.match(out,/NG\s+スプレッドシート/);
 console.log('PASS: setup self-check');

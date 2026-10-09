@@ -11,10 +11,9 @@ const ctx={console,Logger:{log(){}},
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('gas/Code.gs','utf8'),ctx);
 const J=r=>JSON.parse(r.getContent());
 // 手順書 2-3 の表どおりに入れる（値はテスト用）
-Object.assign(props,{NOTION_API_KEY:'secret_test',NOTION_SHIFT_DATABASE_ID:'a'.repeat(32),NOTION_SHIFT_REQUEST_DATABASE_ID:'b'.repeat(32),NOTION_STORE_DATABASE_ID:'c'.repeat(32),
- STORE_ID:'STORE-TEST-01',SHIFT_API_KEY:'Zx9kQ2mTw7Lp4',SHIFT_ADMIN_LOGIN_ID:'admin-id',SHIFT_ADMIN_SETUP_PASSWORD:'AdminPass#1',
+Object.assign(props,{STORE_ID:'STORE-TEST-01',SHIFT_API_KEY:'Zx9kQ2mTw7Lp4',SHIFT_ADMIN_LOGIN_ID:'admin-id',SHIFT_ADMIN_SETUP_PASSWORD:'AdminPass#1',
  SHIFT_EMPLOYEE_LOGIN_ID:'staff-id',SHIFT_EMPLOYEE_SETUP_PASSWORD:'StaffPass#1',SHIFT_INITIAL_OPERATOR_NAME:'テスト管理者'});
-ctx.requestNotion=()=>({properties:{}});
+const {makeFakeSpreadsheet,installSpreadsheetApp}=require('./helpers/fake-sheets.cjs');installSpreadsheetApp(ctx,makeFakeSpreadsheet());
 // 実行前の診断: 抜けが分かる
 let out=ctx.checkShiftSetup();assert.match(out,/要確認/);assert.match(out,/NG\s+管理者ログイン/);assert.match(out,/NG\s+最初の操作員/);
 // 手順書 2-4 の3つを順に実行

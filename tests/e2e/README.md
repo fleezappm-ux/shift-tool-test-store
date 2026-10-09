@@ -1,6 +1,6 @@
 # 画面の通し確認（Playwright・疑似GAS）
 
-本物のGAS・Notionにつながず、通信を疑似で返して、画面の動きを確かめるスクリプト集です（自動テストではなく、手元で流す確認用）。
+本物のGAS・スプレッドシートにつながず、通信を疑似で返して、画面の動きを確かめるスクリプト集です（自動テストではなく、手元で流す確認用）。
 
 1. ビルド：`VITE_SHIFT_GAS_URL=https://script.google.com/macros/s/AAA/exec VITE_BASE_PATH=/ npx vite build --outDir /tmp/smokedist`
 2. 配信：`cd /tmp/smokedist && python3 -m http.server 5199`

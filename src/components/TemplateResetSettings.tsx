@@ -116,7 +116,7 @@ export function TemplateResetSettings({ onBack, onProgress }: { onBack: () => vo
       toast.success("業務データを初期化しました。ログイン画面に戻ります。");
     } catch (error) {
       const message = error instanceof Error ? error.message : "処理を中断しました。進行状況を確認してから再開してください。";
-      setFailure(message.includes("504") ? "Notionが一時的に応答しませんでした。進行状況を確認してから再開してください。" : message);
+      setFailure(message.includes("504") ? "スプレッドシートが一時的に応答しませんでした。進行状況を確認してから再開してください。" : message);
       setStatusReady(false);
       templateStorage.setItem(RESET_PENDING_KEY, JSON.stringify({ preview, archived: count }));
       setArchived(count);
@@ -132,7 +132,7 @@ export function TemplateResetSettings({ onBack, onProgress }: { onBack: () => vo
         <CardDescription>シフト、希望届、店舗の公開設定、従業員・勤務時間設定を初期化します。現在ログインしている操作員1名と、接続情報・ログインID・パスワードは残します。</CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
-        <p className="text-sm text-slate-600">Notionのページはアーカイブされ、完全削除はしません。ほかの端末は、次に開いたときに自動で初期化されます。</p>
+        <p className="text-sm text-slate-600">シフトと希望届のシートは見出しだけ残して空になります。ほかの端末は、次に開いたときに自動で初期化されます。</p>
         <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-800">件数が多い場合、完了まで数分以上かかります。完了表示が出るまで画面を閉じないでください。</p>
         {!preview && <Button variant="outline" disabled={busy} onClick={() => void inspect()}>{busy ? "件数を確認中…" : "対象件数を確認"}</Button>}
         {failure && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm font-bold text-red-700">{failure}{preview && statusReady && " 同じ画面から再開できます。"}</p>}

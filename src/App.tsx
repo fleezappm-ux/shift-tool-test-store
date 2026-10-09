@@ -622,7 +622,7 @@ export default function App() {
           // 旧備考は複製版では表示しない。
           if (merged.supportsGlobalRemarks) {
             skipRemarkDirtyRef.current = true;
-            // 祝日取得とNotion読込が同時に終わっても、先に取得できた自動祝日を消さない。
+            // 祝日取得とシフト読込が同時に終わっても、先に取得できた自動祝日を消さない。
             setGlobalRemarks(previous => {
               const combined = new Map(previous.filter(item => item.type === "祝日").map(item => [item.date, item]));
               merged.globalRemarks.forEach(item => combined.set(item.date, item));
@@ -1112,7 +1112,7 @@ export default function App() {
     }
   };
 
-  // Notionへの反映待ち（裏書き込み）の状態を画面に出す。開いたときにサーバーの反映待ちも確認する。
+  // 反映待ちの状態を画面に出す（スプレッドシート保存では通常0件）。開いたときにサーバーの反映待ちも確認する。
   useEffect(() => subscribePending(setPendingStatus), []);
   useEffect(() => { if (appSession?.role === "admin" && appSession.token) void checkPendingOnServer(); }, [appSession?.role, appSession?.token]);
 
@@ -2067,7 +2067,7 @@ export default function App() {
       </aside>
 
       {appSession?.role === "admin" && !getManagementApiKey() && activeTab !== "admin" && <div role="status" className="fixed inset-x-3 top-3 z-[60] rounded-xl bg-amber-400 px-4 py-3 text-sm font-bold text-slate-900 shadow-xl"><p>最初に1回だけ、管理者用の接続キーを入れてください。入れるまで、シフトは保存できません。</p><button type="button" className="mt-2 rounded-lg bg-white px-3 py-1 text-sm font-black text-slate-900" onClick={() => { setActiveTab("admin"); setSettingsPage("other"); }}>接続キーを入れる</button></div>}
-      {appSession?.role === "admin" && pendingStatus.count > 0 && pendingStatus.lastError && <div role="alert" className="fixed inset-x-3 top-3 z-[70] rounded-xl bg-red-600 px-4 py-3 text-sm font-bold text-white shadow-xl"><p>⚠ Notionへの反映が終わっていません（{pendingStatus.count}件）。内容はサーバーに保存済みで、画面には表示されます。自動で再試行しています。</p><p className="mt-1 text-xs font-normal">{pendingStatus.lastError}</p><button type="button" disabled={pendingStatus.flushing} className="mt-2 rounded-lg bg-white px-3 py-1 text-sm font-black text-red-700 disabled:opacity-60" onClick={() => { void flushPendingNow(); }}>{pendingStatus.flushing ? "反映中…" : "今すぐ再試行"}</button></div>}
+      {appSession?.role === "admin" && pendingStatus.count > 0 && pendingStatus.lastError && <div role="alert" className="fixed inset-x-3 top-3 z-[70] rounded-xl bg-red-600 px-4 py-3 text-sm font-bold text-white shadow-xl"><p>⚠ 保存の反映が終わっていません（{pendingStatus.count}件）。内容はサーバーに保存済みで、画面には表示されます。自動で再試行しています。</p><p className="mt-1 text-xs font-normal">{pendingStatus.lastError}</p><button type="button" disabled={pendingStatus.flushing} className="mt-2 rounded-lg bg-white px-3 py-1 text-sm font-black text-red-700 disabled:opacity-60" onClick={() => { void flushPendingNow(); }}>{pendingStatus.flushing ? "反映中…" : "今すぐ再試行"}</button></div>}
 
       {/* Mobile bottom bar (PCはサイドバーのまま) */}
       {appSession?.role === "admin" && (syncState === "saving" || syncState === "dirty" || syncState === "offline") && <div role="status" className={`md:hidden fixed inset-x-3 bottom-[76px] z-50 rounded-xl px-4 py-3 text-center text-base font-black shadow-xl ${syncState === "offline" ? "bg-red-600 text-white" : "bg-amber-400 text-slate-900"}`}>{syncState === "offline" ? (/接続キー/.test(syncFailure?.message || "") ? "⚠ 保存できていません。接続キーが未設定です（設定→その他設定）" : "⚠ 保存できていません。通信を確認してください") : "保存しています…この画面を動かさないでください"}</div>}
