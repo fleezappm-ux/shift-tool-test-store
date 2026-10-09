@@ -952,23 +952,26 @@ export default function App() {
   const updateAutoDraftSettings = async (value: AutoDraftSettings): Promise<boolean> => { setAutoDraftSettings(value); try { setAutoDraftSettings(await saveAutoDraftSettings(value)); return true; } catch (error) { toast.error(error instanceof Error ? error.message : "自動作成設定を保存できませんでした"); return false; } };
 
   const [autoDraftRun, setAutoDraftRun] = useState<{ state: "idle" | "running" | "done" | "error"; message: string; at?: string }>({ state: "idle", message: "" });
-  const autoDraftStartOffset = Math.max(0, Math.min(3, autoDraftSettings.startOffset ?? 1));
+  const autoDraftStartOffset = Math.max(-12, Math.min(12, autoDraftSettings.startOffset ?? 1));
+  const autoDraftCount = Math.max(1, Math.min(12, autoDraftSettings.horizonMonths || 3));
   const periodLabelAt = (offset: number, span = 1) => {
     const base = addMonths(getCurrentShiftMonth(new Date(), calendarPeriodSettings), offset);
     const first = generateConfiguredDateRange(base.getFullYear(), base.getMonth() + 1, calendarPeriodSettings.startDay, calendarPeriodSettings.endDay);
     const lastAnchor = addMonths(base, span - 1);
     const last = generateConfiguredDateRange(lastAnchor.getFullYear(), lastAnchor.getMonth() + 1, calendarPeriodSettings.startDay, calendarPeriodSettings.endDay);
-    return `${format(first[0], "M/d")}〜${format(last[last.length - 1], "M/d")}`;
+    return `${format(first[0], "yyyy/M/d")}〜${format(last[last.length - 1], "yyyy/M/d")}`;
   };
-  const autoDraftRangeLabel = periodLabelAt(autoDraftStartOffset, 3);
-  const autoDraftStartOptions = [0, 1, 2, 3].map(offset => ({ value: offset, label: `${periodLabelAt(offset)}の期間から${offset === 0 ? "（今の期間）" : offset === 1 ? "（次の期間）" : ""}` }));
+  const autoDraftRangeLabel = periodLabelAt(autoDraftStartOffset, autoDraftCount);
+  const autoDraftStartOptions = Array.from({ length: 25 }, (_, index) => index - 12).map(offset => ({ value: offset, label: `${periodLabelAt(offset)}${offset === 0 ? "（今の期間）" : offset === 1 ? "（次の期間）" : offset < 0 ? "（過去）" : ""}` }));
   const startAutoDraft = async (silent = false) => {
     if (autoDraftRun.state === "running") return;
     if (!silent && !window.confirm(`${autoDraftRangeLabel}のシフト案を作成します。確定済み・手動編集済みの勤務は上書きしません。開始しますか？`)) return;
     setAutoDraftRun({ state: "running", message: "シフト案を作成しています…（アプリは閉じないでください）" });
     try {
-    const baseMonth = addMonths(getCurrentShiftMonth(new Date(), calendarPeriodSettings), autoDraftStartOffset);
-    const allRanges = Array.from({ length: 3 }, (_, offset) => {
+    const runOffset = silent ? 1 : autoDraftStartOffset;
+    const runCount = silent ? 3 : autoDraftCount;
+    const baseMonth = addMonths(getCurrentShiftMonth(new Date(), calendarPeriodSettings), runOffset);
+    const allRanges = Array.from({ length: runCount }, (_, offset) => {
       const anchor = addMonths(baseMonth, offset);
       return generateConfiguredDateRange(anchor.getFullYear(), anchor.getMonth() + 1, calendarPeriodSettings.startDay, calendarPeriodSettings.endDay);
     });
@@ -2422,7 +2425,7 @@ export default function App() {
             ) : activeTab === "admin" && settingsPage === "worktime" ? (
               <motion.div key="settings-worktime" className="space-y-4"><SettingsHead title="勤務時間設定" description="シフトで使う勤務時間パターン" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><Card><CardContent className="p-5 sm:p-6"><ToolHelp title="勤務時間設定って何？"><p>シフトの入力で選べる「勤務時間」の候補を登録します。例：9:00〜18:00（早番）。</p><p>追加・変更は、押したその場で自動的に保存されます（保存ボタンはありません）。登録しなくても「休み」「有休」「任意入力」はいつでも選べます。</p><p>夜勤など日をまたぐ勤務は、退勤の時刻を出勤より早く入れると自動で判定されます。</p></ToolHelp><WorkTimeSettings values={workTimes} ready={workTimeReady} loading={workTimeLoading} onPendingChange={setWorkTimePending} confirmed={setupSeen.includes("worktime-confirmed")} onConfirm={() => { markSetupSeen("worktime-confirmed"); toast.success("勤務時間は、このままで使います"); }} onSave={async values => { markSetupSeen("worktime-confirmed"); const master = await saveWorkTimeMaster(values, workTimeRevision); saveWorkTimes(master.items); setWorkTimes(master.items); setWorkTimeRevision(master.revision); toast.success("勤務時間設定を共通保存しました"); }} /></CardContent></Card></motion.div>
             ) : activeTab === "admin" && settingsPage === "autodraft" ? (
-              <motion.div key="settings-autodraft" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4"><SettingsHead title="シフト案自動作成マスタ" description="シフト案を自動で作る条件" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><ToolHelp title="シフト案の自動作成って何？"><p>勤務パターンを割り当てた人について、先の月のシフト案を自動で作る機能です。勤務パターンを使っていないお店は、OFFのままで大丈夫です。</p><p>確定したシフトや、手で直した勤務は上書きしません。</p></ToolHelp><AutoDraftSettingsView settings={autoDraftSettings} onChange={value => void updateAutoDraftSettings(value)} onStart={() => startAutoDraft()} run={autoDraftRun} rangeLabel={autoDraftRangeLabel} startOptions={autoDraftStartOptions} /></motion.div>
+              <motion.div key="settings-autodraft" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4"><SettingsHead title="シフト案自動作成マスタ" description="シフト案を自動で作る条件" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><ToolHelp title="シフト案の自動作成って何？"><p>勤務パターンを割り当てた人について、先の月のシフト案を自動で作る機能です。勤務パターンを使っていないお店は、OFFのままで大丈夫です。</p><p>確定したシフトや、手で直した勤務は上書きしません。</p></ToolHelp><AutoDraftSettingsView settings={autoDraftSettings} onChange={value => void updateAutoDraftSettings(value)} onStart={() => startAutoDraft()} run={autoDraftRun} rangeLabel={autoDraftRangeLabel} startOptions={autoDraftStartOptions} countValue={autoDraftCount} /></motion.div>
             ) : activeTab === "admin" && settingsPage === "staffing" ? (
               <motion.div key="settings-staffing" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4"><SettingsHead title="人数・連勤のチェック" description="足りない日や連勤をシフト表で知らせる基準" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><ToolHelp title="これは何？"><p>シフトを自動で変える設定ではありません。決めた基準に合わないところを、シフト表で「⚠」と知らせるだけです。</p><p>空欄や「0」の項目はチェックしません。決めたものだけ働きます。</p></ToolHelp><StaffingRulesSettings rules={staffingRules} employees={employeeMaster} roles={roles} saving={staffingSaving} onSave={handleSaveStaffingRules} /></motion.div>
             ) : activeTab === "admin" && settingsPage === "special" ? (
