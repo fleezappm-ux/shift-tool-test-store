@@ -90,6 +90,7 @@ export interface AutoDraftSettings {
   enabled: boolean;
   started: boolean;
   horizonMonths: number;
+  startOffset?: number;
   lastRunAt?: string;
 }
 

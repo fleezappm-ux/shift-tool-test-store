@@ -1390,7 +1390,7 @@ function getShiftAutoDraftSettings(data) {
 
 
 function saveShiftAutoDraftSettings(data) {
-  try { requireShiftSession(data.sessionToken, "admin"); verifyShiftApiKey(data.shiftApiKey); var input = data.settings || {}; var safe = { enabled: Boolean(input.enabled), started: Boolean(input.enabled && input.started), horizonMonths: 3, lastRunAt: input.lastRunAt ? sanitizeText(input.lastRunAt, 50) : "" }; return withShiftLock_(function() { shiftProps_().setProperty("SHIFT_AUTO_DRAFT_SETTINGS_JSON", JSON.stringify(safe)); appendShiftAudit(data, "シフト案自動作成設定", "SHIFT_AUTO_DRAFT_SETTINGS", null, safe); return createJsonDataResponse({ success: true, settings: safe }); }); }
+  try { requireShiftSession(data.sessionToken, "admin"); verifyShiftApiKey(data.shiftApiKey); var input = data.settings || {}; var safe = { enabled: Boolean(input.enabled), started: Boolean(input.enabled && input.started), horizonMonths: 3, startOffset: (input.startOffset === undefined || input.startOffset === null || isNaN(Number(input.startOffset))) ? 1 : Math.max(0, Math.min(3, Math.floor(Number(input.startOffset)))), lastRunAt: input.lastRunAt ? sanitizeText(input.lastRunAt, 50) : "" }; return withShiftLock_(function() { shiftProps_().setProperty("SHIFT_AUTO_DRAFT_SETTINGS_JSON", JSON.stringify(safe)); appendShiftAudit(data, "シフト案自動作成設定", "SHIFT_AUTO_DRAFT_SETTINGS", null, safe); return createJsonDataResponse({ success: true, settings: safe }); }); }
   catch (error) { return createJsonResponse(false, error.message || "自動作成設定を保存できませんでした。"); }
 }
 
