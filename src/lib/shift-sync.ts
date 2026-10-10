@@ -3,6 +3,7 @@ import { templateStorage } from "./template-storage";
 import { Employee, DayShift, ShiftType, GlobalRemark } from "../types";
 import { SHIFT_OPTIONS } from "../constants";
 import { isWorkTime } from "./work-time-options";
+import { HalfLeave, isHalfLeave, isOffShift } from "./off-types";
 import { getShiftSession } from "./auth-sync";
 
 // この店舗専用GAS（Web App）のURL。既存デプロイの新バージョンならURLは変わりません。
@@ -81,8 +82,11 @@ async function callGas(action: string, extra: Record<string, unknown> = {}, requ
 }
 
 /** シフト内容の文字列を、アプリ内の shift / customShiftText の形に変換します。 */
-function parseShiftContent(content: string): { shift: ShiftType; customShiftText?: string } {
+export function parseShiftContent(content: string): { shift: ShiftType; customShiftText?: string; leave?: HalfLeave } {
   if (!content) return { shift: "" };
+  // 半休は「午前有休 13:00～18:00」のように、休みの種類と働く時間を並べて保存します。
+  const half = content.match(/^(午前有休|午後有休)\s+(.+)$/);
+  if (half) return { ...parseShiftContent(half[2]), leave: half[1] as HalfLeave };
   if (((SHIFT_OPTIONS as string[]).includes(content) && content !== "任意入力") || isWorkTime(content)) {
     return { shift: content as ShiftType };
   }
@@ -90,9 +94,9 @@ function parseShiftContent(content: string): { shift: ShiftType; customShiftText
 }
 
 /** shift / customShiftText を、スプレッドシートに保存する1本の文字列に変換します。 */
-function buildShiftContent(shift: ShiftType, customShiftText?: string): string {
-  if (shift === "任意入力") return customShiftText || "";
-  return shift || "";
+export function buildShiftContent(shift: ShiftType, customShiftText?: string, leave?: string): string {
+  const base = shift === "任意入力" ? (customShiftText || "") : (shift || "");
+  return isHalfLeave(leave) && base && !isOffShift(base) ? `${leave} ${base}` : base;
 }
 
 /**
@@ -136,11 +140,12 @@ export async function fetchShiftsFromServer(existingEmployees: Employee[], throw
         emp = { id: employeeId || Math.random().toString(36).substr(2, 9), name, shifts: [] } as Employee;
         byId.set(emp.id, emp);
       }
-      const { shift, customShiftText } = parseShiftContent(row["シフト内容"] || "");
+      const { shift, customShiftText, leave } = parseShiftContent(row["シフト内容"] || "");
       const dayShift: DayShift = {
         date: dateStart,
         shift,
         customShiftText,
+        ...(leave ? { leave } : {}),
         breakTime: row["休憩時間"] || "",
         workTime: row["実働時間"] || "",
         comment: ""
@@ -187,7 +192,7 @@ export function seedSavedBaseline(employees: Employee[] | null) {
   if (!employees) { savedBaseline = null; return; }
   const next = new Map<string, string>();
   employees.forEach(employee => employee.shifts.forEach(shift => {
-    const signature = rowSignature(employee.name, buildShiftContent(shift.shift, shift.customShiftText), shift.breakTime || "", shift.workTime || "");
+    const signature = rowSignature(employee.name, buildShiftContent(shift.shift, shift.customShiftText, shift.leave), shift.breakTime || "", shift.workTime || "");
     if (signature) next.set(rowKey(employee.id, shift.date.slice(0, 10)), signature);
   }));
   savedBaseline = next;
@@ -218,7 +223,7 @@ export async function saveMonthToServer(
         "従業員ID": employee.id,
         "社員名": employee.name,
         "日付": date,
-        "シフト内容": dayShift ? buildShiftContent(dayShift.shift, dayShift.customShiftText) : "",
+        "シフト内容": dayShift ? buildShiftContent(dayShift.shift, dayShift.customShiftText, dayShift.leave) : "",
         "休憩時間": dayShift?.breakTime || "",
         "実働時間": dayShift?.workTime || "",
         "備考": "",

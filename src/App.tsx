@@ -104,7 +104,7 @@ import { readWorkTimes, saveWorkTimes, workTimeValue, displayShift, ShiftDisplay
 import { fetchWorkTimeMaster, saveWorkTimeMaster } from "./lib/work-time-sync";
 import { ShiftDisplayControl } from "./components/ShiftDisplayControl";
 import { fetchAutoDraftSettings, saveAutoDraftSettings } from "./lib/auto-draft-sync";
-import { allOffTypes, isOffShift } from "./lib/off-types";
+import { allOffTypes, isOffShift, isHalfLeave, paidLeaveValue, leavePrefix, formatDays, HALF_LEAVE_TYPES } from "./lib/off-types";
 
 // 「質問に答えてシフト案を作る」は仕上げの段階で戻すため、いまは非表示にしています。
 const SHOW_SHIFT_WIZARD = false;
@@ -356,6 +356,7 @@ export default function App() {
   const [overviewCell, setOverviewCell] = useState<{ employeeId: string; date: string } | null>(null);
   const [overviewShift, setOverviewShift] = useState("none");
   const [overviewCustom, setOverviewCustom] = useState("");
+  const [overviewLeave, setOverviewLeave] = useState<string>("none");
   const overviewDialogRef = useRef<HTMLDialogElement>(null);
   const [periodStatusLoading, setPeriodStatusLoading] = useState(false);
   const [paidLeaveBalance, setPaidLeaveBalance] = useState<PaidLeaveBalance | null>(null);
@@ -1207,6 +1208,7 @@ export default function App() {
     const shift = employee.shifts.find(item => item.date === date);
     setOverviewShift(shift?.shift || "none");
     setOverviewCustom(shift?.customShiftText || "");
+    setOverviewLeave(shift?.leave || "none");
     setOverviewCell({ employeeId: employee.id, date });
   };
 
@@ -1219,7 +1221,8 @@ export default function App() {
     setEmployees(previous => previous.map(employee => {
       if (employee.id !== overviewCell.employeeId) return employee;
       const existing = employee.shifts.find(item => item.date === overviewCell.date);
-      const updated: DayShift = { ...existing, date: overviewCell.date, shift: value, customShiftText: value === "任意入力" ? custom : existing?.customShiftText, ...times, comment: existing?.comment || "" };
+      const leave = value && !isOffShift(value) && isHalfLeave(overviewLeave) ? overviewLeave : undefined;
+      const updated: DayShift = { ...existing, date: overviewCell.date, shift: value, leave, customShiftText: value === "任意入力" ? custom : existing?.customShiftText, ...times, comment: existing?.comment || "" };
       return { ...employee, shifts: existing ? employee.shifts.map(item => item.date === updated.date ? updated : item) : [...employee.shifts, updated] };
     }));
     setOverviewCell(null);
@@ -1292,6 +1295,7 @@ export default function App() {
         newShifts[existingShiftIndex] = { 
           ...newShifts[existingShiftIndex], 
           shift: finalShift as ShiftType, 
+          leave: finalShift && !isOffShift(finalShift) ? newShifts[existingShiftIndex].leave : undefined,
           breakTime: finalShift === "任意入力" ? newShifts[existingShiftIndex].breakTime : breakTime, 
           workTime: finalShift === "任意入力" ? newShifts[existingShiftIndex].workTime : workTime 
         };
@@ -1301,6 +1305,11 @@ export default function App() {
       
       return { ...emp, shifts: newShifts };
     }));
+  };
+
+  const handleLeaveChange = (employeeId: string, date: string, leave: string) => {
+    if (isLocked) return;
+    setEmployees(prev => prev.map(emp => emp.id !== employeeId ? emp : { ...emp, shifts: emp.shifts.map(s => s.date === date ? { ...s, leave: isHalfLeave(leave) ? leave : undefined } : s) }));
   };
 
   const handleCustomShiftTextChange = (employeeId: string, date: string, text: string) => {
@@ -1620,7 +1629,7 @@ export default function App() {
         format(date, "E", { locale: ja }),
         ...exportEmployees.map(e => {
           const s = getShift(e, date);
-          const shiftText = s?.shift === "任意入力" ? (s?.customShiftText || "任意入力") : (s?.shift === "休み" ? "" : (s?.shift || "-"));
+          const shiftText = leavePrefix(s) + (s?.shift === "任意入力" ? (s?.customShiftText || "任意入力") : (s?.shift === "休み" ? "" : (s?.shift || "-")));
           return shiftText;
         })
       ];
@@ -1708,7 +1717,7 @@ export default function App() {
         format(date, "M/d(E)", { locale: ja }),
         ...exportEmployees.map(e => {
           const s = getShift(e, date);
-          return s?.shift === "任意入力" ? (s?.customShiftText || "任意入力") : (s?.shift === "休み" ? "" : (s?.shift || "-"));
+          return leavePrefix(s) + (s?.shift === "任意入力" ? (s?.customShiftText || "任意入力") : (s?.shift === "休み" ? "" : (s?.shift || "-")));
         }),
         [gr?.type, gr?.text].filter(Boolean).join(" "),
       ];
@@ -1759,7 +1768,7 @@ export default function App() {
           return {
             workHours: acc.workHours + (isNaN(wh) ? 0 : wh + wm/60),
             attendance: acc.attendance + (isWorking ? 1 : 0),
-            paid: acc.paid + (s.shift === "有休" ? 1 : 0)
+            paid: acc.paid + paidLeaveValue(s)
           };
         }, { workHours: 0, attendance: 0, paid: 0 });
 
@@ -1822,7 +1831,7 @@ export default function App() {
       outputDateRange.forEach(date => {
         const s = getShift(emp, date);
         const gr = getGlobalRemark(date);
-        const shiftText = s?.shift === "任意入力" ? (s?.customShiftText || "任意入力") : (s?.shift === "休み" ? "" : (s?.shift || "-"));
+        const shiftText = leavePrefix(s) + (s?.shift === "任意入力" ? (s?.customShiftText || "任意入力") : (s?.shift === "休み" ? "" : (s?.shift || "-")));
         const rowData = [
           format(date, "M/d(E)", { locale: ja }),
           shiftText,
@@ -1873,7 +1882,7 @@ export default function App() {
             workHours: acc.workHours + (isNaN(wh) ? 0 : wh + wm/60),
             breakHours: acc.breakHours + (isNaN(bh) ? 0 : bh + bm/60),
             attendance: acc.attendance + (isWorking ? 1 : 0),
-            paid: acc.paid + (s.shift === "有休" ? 1 : 0)
+            paid: acc.paid + paidLeaveValue(s)
           };
         }, { workHours: 0, breakHours: 0, attendance: 0, paid: 0 });
 
@@ -2291,6 +2300,10 @@ export default function App() {
                           {[...new Set([...visibleWorkTimes, ...allOffTypes(), "任意入力", ...(overviewShift !== "none" ? [overviewShift] : [])])].map(value => <option key={value} value={value}>{displayShift(value, workTimes, "both")}</option>)}
                         </select></label>
                         {overviewShift === "任意入力" && <label className="block text-sm font-bold">勤務時間<Input className="mt-2" placeholder="例：9:00～17:00" value={overviewCustom} onChange={event => setOverviewCustom(event.target.value)} /></label>}
+                        {overviewShift !== "none" && !isOffShift(overviewShift) && <label className="block text-sm font-bold">半休（有休0.5日）<select className="mt-2 h-12 w-full rounded-lg border border-slate-300 bg-white px-3" value={overviewLeave} onChange={event => setOverviewLeave(event.target.value)}>
+                          <option value="none">なし</option>
+                          {HALF_LEAVE_TYPES.map(value => <option key={value} value={value}>{value}（この勤務時間は働く時間）</option>)}
+                        </select><span className="mt-1 block text-xs font-normal text-slate-500">勤務時間には「働く側の時間」を入れてください。例：午前有休＋13:00～18:00</span></label>}
                         <p className="text-xs text-slate-500">変更後は自動保存され、個人シフトにも反映されます。</p>
                         <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setOverviewCell(null)}>キャンセル</Button><Button type="submit" disabled={isLocked || periodStatusLoading}>変更する</Button></div>
                       </form>}
@@ -2350,7 +2363,7 @@ export default function App() {
                                 {dashboardEmployees.map(emp => {
                                   const s = getShift(emp, date);
                                   const leaveRequest = leaveRequests.find(item => (item.employeeId ? item.employeeId === emp.id : item.employeeName === (emp.displayName || emp.name) || item.employeeName === emp.name) && item.date === dateStr && (item.status === "申請中" || item.status === "承認"));
-                                  const actualShiftText = s?.shift === "任意入力" ? (s?.customShiftText || "任意") : (s?.shift === "休み" ? "" : (s?.shift || "-"));
+                                  const actualShiftText = leavePrefix(s) + (s?.shift === "任意入力" ? (s?.customShiftText || "任意") : (s?.shift === "休み" ? "" : (s?.shift || "-")));
                                   const shiftText = displayShift(actualShiftText, workTimes, shiftDisplayMode);
                                   const compactParts = shiftText.includes("～") ? shiftText.split("～") : [shiftText];
                                   return (
@@ -2358,6 +2371,8 @@ export default function App() {
                                       <button type="button" disabled={!isFromAdmin || !overviewEditing || isLocked || periodStatusLoading || appSession.role !== "admin"} onClick={() => openOverviewCell(emp, dateStr)} aria-label={`${emp.displayName || emp.name} ${format(date, "M月d日")} ${actualShiftText || (s?.shift === "休み" ? "休み" : "なし")}の勤務を変更`} className={`w-full min-h-9 text-[12px] py-1.5 rounded-sm disabled:cursor-default enabled:cursor-pointer enabled:ring-1 enabled:ring-amber-500 enabled:bg-amber-50 enabled:hover:bg-amber-100 enabled:focus-visible:outline-2 enabled:focus-visible:outline-amber-600 text-center font-bold leading-none ${
                                         s?.shift === "有休" 
                                           ? "bg-red-100 text-red-800 border border-red-200" 
+                                          : paidLeaveValue(s) === 0.5
+                                            ? "bg-orange-100 text-orange-900 border border-orange-300"
                                           : s?.shift === "休み"
                                             ? ""
                                             : isOffShift(s?.shift)
@@ -2388,15 +2403,15 @@ export default function App() {
                                 .reduce((acc, s) => {
                                   const isWorking = s.shift && !isOffShift(s.shift);
                                   if (!s.workTime || !s.workTime.includes(":")) {
-                                    return { ...acc, attendance: acc.attendance + (isWorking ? 1 : 0), paid: acc.paid + (s.shift === "有休" ? 1 : 0) };
+                                    return { ...acc, attendance: acc.attendance + (isWorking ? 1 : 0), paid: acc.paid + paidLeaveValue(s) };
                                   }
                                   const [h, m] = s.workTime.split(":").map(Number);
                                   if (isNaN(h) || isNaN(m)) {
-                                    return { ...acc, attendance: acc.attendance + (isWorking ? 1 : 0), paid: acc.paid + (s.shift === "有休" ? 1 : 0) };
+                                    return { ...acc, attendance: acc.attendance + (isWorking ? 1 : 0), paid: acc.paid + paidLeaveValue(s) };
                                   }
                                   return {
                                     hours: acc.hours + h + m/60,
-                                    paid: acc.paid + (s.shift === "有休" ? 1 : 0),
+                                    paid: acc.paid + paidLeaveValue(s),
                                     attendance: acc.attendance + (isWorking ? 1 : 0)
                                   };
                                 }, { hours: 0, paid: 0, attendance: 0 });
@@ -2598,7 +2613,7 @@ export default function App() {
                   if (isNaN(h) || isNaN(m)) return acc;
                   return acc + h + m / 60;
                 }, 0).toFixed(1);
-                const paidLeaveDays = periodShifts.filter(s => s.shift === "有休").length;
+                const paidLeaveDays = periodShifts.reduce((sum, s) => sum + paidLeaveValue(s), 0);
                 return (
                   <motion.div
                     key={emp.id}
@@ -2669,6 +2684,12 @@ export default function App() {
                                               ))}
                                             </SelectContent>
                                           </Select>
+                                          {s?.shift && !isOffShift(s.shift) && (
+                                            <select aria-label="半休" disabled={isLocked} value={s.leave || "none"} onChange={e => handleLeaveChange(emp.id, dateStr, e.target.value)} className={`h-8 w-[5.5rem] rounded-md border px-1 text-[11px] ${s.leave ? "bg-orange-100 border-orange-300 text-orange-900 font-bold" : "bg-white border-input text-slate-500"}`}>
+                                              <option value="none">半休なし</option>
+                                              {HALF_LEAVE_TYPES.map(v => <option key={v} value={v}>{v}</option>)}
+                                            </select>
+                                          )}
                                           {isFromAdmin && !isLocked && (
                                             <DropdownMenu>
                                               <DropdownMenuTrigger render={<Button 
@@ -2764,7 +2785,7 @@ export default function App() {
                                           .filter(s => s.shift && !isOffShift(s.shift))
                                           .length
                                       }日</span>
-                                      {(() => { const paid = emp.shifts                                           .filter(s => dateRange.some(d => s.date.startsWith(getDateStr(d))))                                           .filter(s => s.shift === "有休")                                           .length; return <span className={`${paid > 0 ? "text-red-700" : "text-slate-400"} text-[10px]`}>{paid}日(有)</span>; })()}
+                                      {(() => { const paid = emp.shifts                                           .filter(s => dateRange.some(d => s.date.startsWith(getDateStr(d))))                                           .reduce((sum, s) => sum + paidLeaveValue(s), 0); return <span className={`${paid > 0 ? "text-red-700" : "text-slate-400"} text-[10px]`}>{formatDays(paid)}日(有)</span>; })()}
                                     </div>
                                   </div>
                                 </TableCell>

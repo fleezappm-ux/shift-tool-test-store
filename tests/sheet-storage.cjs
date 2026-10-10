@@ -45,6 +45,9 @@ props.SHIFT_PAID_LEAVE_BALANCES_JSON=JSON.stringify({e1:{enabled:true,remainingD
 delete props.SHIFT_PERIOD_STATUSES_JSON;
 ctx.saveShiftMonth({...base,shifts:[row('2026-10-12','有休'),row('2026-10-13','有休')]});
 let rec=ctx.reconcileShiftPaidLeaveForPeriod('2026-10-01','2026-10-31',true);assert.equal(JSON.parse(rec.balancesJson).e1.remainingDays,3);
+// 半休（午前有休/午後有休）は0.5日で引かれ、解除で戻る
+ctx.saveShiftMonth({...base,shifts:[row('2026-10-14','午前有休 13:00～18:00')]});
+rec=ctx.reconcileShiftPaidLeaveForPeriod('2026-10-01','2026-10-31',false);rec=ctx.reconcileShiftPaidLeaveForPeriod('2026-10-01','2026-10-31',true);assert.equal(JSON.parse(rec.balancesJson).e1.remainingDays,2.5,'半休は0.5日');
 // 8. 反映待ち用の旧APIは互換のため残り、常に0件
 assert.equal(ctx.getShiftPendingStatus({}).count,0);assert.equal(ctx.flushShiftPending({shiftApiKey:'x'}).pending,0);
 // 9. 休み希望の控えが「休み希望」シートに作られ、更新・削除に追従する

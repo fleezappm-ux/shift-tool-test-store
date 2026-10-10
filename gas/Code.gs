@@ -699,9 +699,11 @@ function reconcileShiftPaidLeaveForPeriod(periodStart, periodEnd, locked) {
       var flat = item.flat;
       var date = flat["日付"].start;
       if (date < periodStart || date > periodEnd) return;
-      if (String(flat["シフト内容"] || "") !== "有休") return;
+      var content = String(flat["シフト内容"] || "");
+      var weight = content === "有休" ? 1 : (/^(午前有休|午後有休)\s/.test(content) ? 0.5 : 0);
+      if (!weight) return;
       var employeeId = String(flat["従業員ID"] || "");
-      if (employeeId && balances[employeeId] && balances[employeeId].enabled) wanted[employeeId] = Number(wanted[employeeId] || 0) + 1;
+      if (employeeId && balances[employeeId] && balances[employeeId].enabled) wanted[employeeId] = Number(wanted[employeeId] || 0) + weight;
     });
     // 実際に引いた日数（0未満にならないよう丸めた後の値）だけを台帳へ記録し、解除時にその分だけ戻します。
     var deductions = {};

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { allOffTypes, isOffShift, setExtraOffTypes } from "../src/lib/off-types";
+import { allOffTypes, isOffShift, setExtraOffTypes, paidLeaveValue, leavePrefix } from "../src/lib/off-types";
+import { parseShiftContent, buildShiftContent } from "../src/lib/shift-sync";
 import { calculateTimes } from "../src/lib/shift-utils";
 import { isWorkingShift } from "../src/lib/staffing-check";
 
@@ -15,4 +16,17 @@ assert.equal(isWorkingShift("特別休暇"), false);
 assert.deepEqual(calculateTimes("特別休暇"), { breakTime: "0:00", workTime: "0:00" });
 assert.equal(isWorkingShift("09:00～18:00"), true);
 setExtraOffTypes([]);
+// 半休（B案）：働く側の時間は別に保持し、有休0.5日として数える
+assert.equal(paidLeaveValue({ shift: "有休" }), 1);
+assert.equal(paidLeaveValue({ shift: "13:00～18:00", leave: "午前有休" }), 0.5);
+assert.equal(paidLeaveValue({ shift: "休み", leave: "午前有休" }), 0);
+assert.equal(paidLeaveValue({ shift: "13:00～18:00" }), 0);
+assert.equal(leavePrefix({ leave: "午後有休" }), "午後有休 ");
+assert.equal(buildShiftContent("13:00～18:00" as never, undefined, "午前有休"), "午前有休 13:00～18:00");
+assert.equal(buildShiftContent("休み" as never, undefined, "午前有休"), "休み");
+const parsed = parseShiftContent("午後有休 9:00～13:00");
+assert.equal(parsed.leave, "午後有休");
+assert.equal(parsed.shift, "9:00～13:00");
+assert.equal(parseShiftContent("9:00～18:00").leave, undefined);
+assert.equal(calculateTimes("13:00～18:00").workTime !== "0:00", true);
 console.log("PASS: off types (代休 built-in, extras, not counted as work)");
