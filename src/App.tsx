@@ -105,6 +105,7 @@ import { fetchWorkTimeMaster, saveWorkTimeMaster } from "./lib/work-time-sync";
 import { ShiftDisplayControl } from "./components/ShiftDisplayControl";
 import { fetchAutoDraftSettings, saveAutoDraftSettings } from "./lib/auto-draft-sync";
 import { allOffTypes, isOffShift, isHalfLeave, paidLeaveValue, leavePrefix, formatDays, HALF_LEAVE_TYPES } from "./lib/off-types";
+import { getJapaneseHolidayDates } from "./lib/japanese-holidays";
 
 // 「質問に答えてシフト案を作る」は仕上げの段階で戻すため、いまは非表示にしています。
 const SHOW_SHIFT_WIZARD = false;
@@ -357,6 +358,8 @@ export default function App() {
   const [overviewShift, setOverviewShift] = useState("none");
   const [overviewCustom, setOverviewCustom] = useState("");
   const [overviewLeave, setOverviewLeave] = useState<string>("none");
+  const [overviewReason, setOverviewReason] = useState("");
+  const [overviewReasonText, setOverviewReasonText] = useState("");
   const overviewDialogRef = useRef<HTMLDialogElement>(null);
   const [periodStatusLoading, setPeriodStatusLoading] = useState(false);
   const [paidLeaveBalance, setPaidLeaveBalance] = useState<PaidLeaveBalance | null>(null);
@@ -1203,17 +1206,44 @@ export default function App() {
     if (!overviewCell && dialog?.open) dialog.close();
   }, [overviewCell]);
 
+  const pendingRequestFor = (employee: Employee | undefined, date: string) => employee ? leaveRequests.find(item => item.status === "申請中" && item.type !== "希望なし" && item.date === date && (item.employeeId ? item.employeeId === employee.id : item.employeeName === (employee.displayName || employee.name) || item.employeeName === employee.name)) : undefined;
+  const plainTime = (value?: string) => (value || "").replace(/^0(\d:)/, "$1");
+
   const openOverviewCell = (employee: Employee, date: string) => {
-    if (!overviewEditing || !isFromAdmin || appSession?.role !== "admin" || isLocked || periodStatusLoading) return;
+    const request = pendingRequestFor(employee, date);
+    if (!isFromAdmin || appSession?.role !== "admin" || periodStatusLoading) return;
+    if (!request && (!overviewEditing || isLocked)) return;
     const shift = employee.shifts.find(item => item.date === date);
-    setOverviewShift(shift?.shift || "none");
-    setOverviewCustom(shift?.customShiftText || "");
-    setOverviewLeave(shift?.leave || "none");
+    let nextShift = shift?.shift || "none";
+    let nextCustom = shift?.customShiftText || "";
+    let nextLeave: string = shift?.leave || "none";
+    // 申請の内容を、変更後の候補として最初から入れておく（管理者が直せる）
+    if (request && !isLocked) {
+      if (request.type === "有給希望") { nextShift = "有休"; nextLeave = "none"; }
+      else if (request.type === "休み希望") { nextShift = "休み"; nextLeave = "none"; }
+      else if (request.type === "午前休希望" || request.type === "午後休希望") { if (shift?.shift && !isOffShift(shift.shift)) nextLeave = request.type === "午前休希望" ? "午前有休" : "午後有休"; }
+      else if (request.type === "出勤希望" && request.desiredWorkStart && request.desiredWorkEnd) { nextShift = "任意入力"; nextCustom = `${plainTime(request.desiredWorkStart)}～${plainTime(request.desiredWorkEnd)}`; nextLeave = "none"; }
+    }
+    setOverviewShift(nextShift);
+    setOverviewCustom(nextCustom);
+    setOverviewLeave(nextLeave);
+    setOverviewReason("");
+    setOverviewReasonText("");
     setOverviewCell({ employeeId: employee.id, date });
   };
 
+  const rejectOverviewRequest = (request: LeaveRequest) => {
+    const reason = [overviewReason, overviewReasonText.trim()].filter(Boolean).join("　");
+    void handleLeaveRequestStatus(request, "却下", reason);
+    setOverviewCell(null);
+  };
+
   const applyOverviewCell = () => {
-    if (!overviewCell || !overviewEditing || !isFromAdmin || appSession?.role !== "admin" || isLocked || periodStatusLoading) return;
+    if (!overviewCell || !isFromAdmin || appSession?.role !== "admin" || periodStatusLoading) return;
+    const targetEmployee = employees.find(item => item.id === overviewCell.employeeId);
+    const request = pendingRequestFor(targetEmployee, overviewCell.date);
+    if (!request && (!overviewEditing || isLocked)) return;
+    if (isLocked) { setOverviewCell(null); return; }
     const value = overviewShift === "none" ? "" : overviewShift;
     const custom = finalizeShiftText(overviewCustom);
     if (value === "任意入力" && !custom) { toast.error("勤務時間を入力してください"); return; }
@@ -1226,6 +1256,12 @@ export default function App() {
       return { ...employee, shifts: existing ? employee.shifts.map(item => item.date === updated.date ? updated : item) : [...employee.shifts, updated] };
     }));
     setOverviewCell(null);
+  };
+
+  const approveOverviewRequest = (request: LeaveRequest) => {
+    if (!isLocked && overviewShift === "任意入力" && !finalizeShiftText(overviewCustom)) { toast.error("勤務時間を入力してください"); return; }
+    void handleLeaveRequestStatus(request, request.type === "訂正依頼" ? "対応済み" : "承認");
+    if (isLocked) setOverviewCell(null); else applyOverviewCell();
   };
 
   const makeAutoPlan = (rules: StaffingRules): AutoPlan => {
@@ -1653,6 +1689,44 @@ export default function App() {
     toast.success("CSVをダウンロードしました");
   };
 
+  const downloadImage = async (outputDateRange: Date[] = dateRange, share = false) => {
+    if (!outputDateRange.length) return;
+    try {
+      const { renderShiftImage } = await import("./lib/shift-image");
+      const list = sortEmployeesForDisplay(employees).filter(item => (item as Employee & { active?: boolean }).active !== false);
+      const sameAsCurrent = dateRange.length > 0 && getDateStr(outputDateRange[0]) === getDateStr(dateRange[0]);
+      const kind = sameAsCurrent && isLocked ? "確定シフト" : "シフト案";
+      const rangeLabel = `${format(outputDateRange[0], "M/d")}〜${format(outputDateRange[outputDateRange.length - 1], "M/d")}`;
+      const holidays = new Set(getJapaneseHolidayDates(outputDateRange[0], outputDateRange[outputDateRange.length - 1]));
+      const blob = await renderShiftImage({
+        title: `${storeMaster.storeName || "シフト"}　${kind}`,
+        subtitle: `${rangeLabel}　出力日 ${format(new Date(), "M/d")}`,
+        employees: list.map(item => item.displayName || item.name),
+        rows: outputDateRange.map(date => {
+          const gr = getGlobalRemark(date);
+          return {
+            label: format(date, "M/d"),
+            weekday: format(date, "E", { locale: ja }),
+            holiday: date.getDay() === 0 || holidays.has(getDateStr(date)),
+            remark: gr?.type || "",
+            cells: list.map(item => { const s = getShift(item, date); return s?.shift ? leavePrefix(s) + (s.shift === "任意入力" ? (s.customShiftText || "") : s.shift) : ""; }),
+          };
+        }),
+      });
+      const fileName = `${kind}_${format(outputDateRange[0], "yyyyMMdd")}-${format(outputDateRange[outputDateRange.length - 1], "yyyyMMdd")}.png`;
+      const file = new File([blob], fileName, { type: "image/png" });
+      if (share && typeof navigator !== "undefined" && navigator.canShare?.({ files: [file] })) {
+        try { await navigator.share({ files: [file], title: `${kind} ${rangeLabel}` }); return; } catch (cause) { if (cause instanceof DOMException && cause.name === "AbortError") return; }
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url; link.download = fileName;
+      document.body.appendChild(link); link.click(); document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      toast.success("画像を保存しました。LINEのトークに添付して送れます");
+    } catch (error) { toast.error(error instanceof Error ? `画像を作れませんでした：${error.message}` : "画像を作れませんでした"); }
+  };
+
   const downloadExcel = async (outputDateRange: Date[] = dateRange) => {
     try { await buildExcel(outputDateRange); } catch (error) { toast.error(error instanceof Error ? `Excelを作成できませんでした：${error.message}` : "Excelを作成できませんでした"); }
   };
@@ -2075,6 +2149,12 @@ export default function App() {
                         <DropdownMenuItem className="text-xs font-medium cursor-pointer py-2 px-3 rounded-md focus:bg-slate-100 transition-colors" onClick={() => void downloadExcel(period)}>
                           <Grid3X3 className="w-3 h-3 mr-2 text-green-600" /> Excel形式でダウンロード
                         </DropdownMenuItem>
+                        <DropdownMenuItem className="text-xs font-medium cursor-pointer py-2 px-3 rounded-md focus:bg-slate-100 transition-colors" onClick={() => void downloadImage(period)}>
+                          <Download className="w-3 h-3 mr-2 text-blue-600" /> 画像（PNG）で保存
+                        </DropdownMenuItem>
+                        <DropdownMenuItem className="text-xs font-medium cursor-pointer py-2 px-3 rounded-md focus:bg-slate-100 transition-colors" onClick={() => void downloadImage(period, true)}>
+                          <Download className="w-3 h-3 mr-2 text-green-600" /> 画像をLINEなどで送る
+                        </DropdownMenuItem>
                       </div>
                     );
                   })}
@@ -2293,9 +2373,23 @@ export default function App() {
                       </select>
                     </div>}
                     <dialog ref={overviewDialogRef} aria-labelledby="overview-edit-title" onCancel={() => setOverviewCell(null)} onClose={() => setOverviewCell(null)} className="fixed inset-0 m-auto w-[calc(100%_-_2rem)] max-w-md max-h-[85dvh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 text-slate-900 shadow-2xl backdrop:bg-black/50">
-                      {overviewCell && <form onSubmit={event => { event.preventDefault(); applyOverviewCell(); }} className="space-y-4">
-                        <h2 id="overview-edit-title" className="text-lg font-bold">{employees.find(item => item.id === overviewCell.employeeId)?.displayName || employees.find(item => item.id === overviewCell.employeeId)?.name}・{overviewCell.date.slice(5).replace("-", "/")}の勤務</h2>
-                        <label className="block text-sm font-bold">勤務<select autoFocus className="mt-2 h-12 w-full rounded-lg border border-slate-300 bg-white px-3" value={overviewShift} onChange={event => setOverviewShift(event.target.value)}>
+                      {overviewCell && (() => {
+                        const cellEmployee = employees.find(item => item.id === overviewCell.employeeId);
+                        const request = pendingRequestFor(cellEmployee, overviewCell.date);
+                        const current = cellEmployee?.shifts.find(item => item.date === overviewCell.date);
+                        const textOf = (shift: string, custom: string, leave: string) => { const base = shift === "none" || !shift ? "なし" : shift === "任意入力" ? (custom || "（時間を入力）") : shift === "休み" ? "休み" : shift; return (isHalfLeave(leave) && shift !== "none" && !isOffShift(shift) ? `${leave} ` : "") + base; };
+                        const beforeText = textOf(current?.shift || "none", current?.customShiftText || "", current?.leave || "none");
+                        const afterText = textOf(overviewShift, finalizeShiftText(overviewCustom), overviewLeave);
+                        const REASONS = ["人数が足りないため", "ほかの人と日が重なっているため", "繁忙日のため", "期間が確定済みのため"];
+                        return <form onSubmit={event => { event.preventDefault(); if (request) approveOverviewRequest(request); else applyOverviewCell(); }} className="space-y-4">
+                        <h2 id="overview-edit-title" className="text-lg font-bold">{cellEmployee?.displayName || cellEmployee?.name}・{overviewCell.date.slice(5).replace("-", "/")}の{request ? "申請の確認" : "勤務"}</h2>
+                        {request && <div className="space-y-3">
+                          <div className="rounded-xl border-2 border-red-600 bg-red-50 p-3 text-sm leading-6"><b>{request.type}</b>{request.type === "出勤希望" && request.desiredWorkStart && request.desiredWorkEnd ? `（${request.desiredWorkStart}〜${request.desiredWorkEnd}）` : ""}<span className="ml-2 text-xs text-slate-500">{request.submittedAt ? new Date(request.submittedAt).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}</span>{request.comment && <p className="mt-1 whitespace-pre-wrap">本人のコメント：{request.comment}</p>}</div>
+                          <div className="flex items-center gap-2 text-center text-sm"><div className="flex-1 rounded-lg bg-slate-100 p-3"><span className="block text-[11px] text-slate-500">いま</span><b>{beforeText}</b></div><span aria-hidden="true">→</span><div className={`flex-1 rounded-lg border-2 p-3 ${isLocked ? "border-slate-300 bg-slate-100" : "border-green-700 bg-green-50"}`}><span className="block text-[11px] text-green-800">変更後</span><b>{isLocked ? "（確定済みのため変更できません）" : afterText}</b></div></div>
+                          {isLocked && <p className="text-xs font-bold text-red-700">この期間は確定済みです。シフトを変えるには確定を解除してください。ここでは「対応済み」か「却下」だけ選べます。</p>}
+                        </div>}
+                        {!isLocked && <>
+                        <label className="block text-sm font-bold">{request ? "変更後の勤務（直せます）" : "勤務"}<select autoFocus className="mt-2 h-12 w-full rounded-lg border border-slate-300 bg-white px-3" value={overviewShift} onChange={event => setOverviewShift(event.target.value)}>
                           <option value="none">なし</option>
                           {[...new Set([...visibleWorkTimes, ...allOffTypes(), "任意入力", ...(overviewShift !== "none" ? [overviewShift] : [])])].map(value => <option key={value} value={value}>{displayShift(value, workTimes, "both")}</option>)}
                         </select></label>
@@ -2304,9 +2398,18 @@ export default function App() {
                           <option value="none">なし</option>
                           {HALF_LEAVE_TYPES.map(value => <option key={value} value={value}>{value}（この勤務時間は働く時間）</option>)}
                         </select><span className="mt-1 block text-xs font-normal text-slate-500">勤務時間には「働く側の時間」を入れてください。例：午前有休＋13:00～18:00</span></label>}
-                        <p className="text-xs text-slate-500">変更後は自動保存され、個人シフトにも反映されます。</p>
-                        <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setOverviewCell(null)}>キャンセル</Button><Button type="submit" disabled={isLocked || periodStatusLoading}>変更する</Button></div>
-                      </form>}
+                        </>}
+                        {!request && <p className="text-xs text-slate-500">変更後は自動保存され、個人シフトにも反映されます。</p>}
+                        <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setOverviewCell(null)}>{request ? "あとで" : "キャンセル"}</Button><Button type="submit" disabled={periodStatusLoading} className={request ? "bg-green-700 hover:bg-green-800" : ""}>{request ? (isLocked ? "対応済みにする" : request.type === "訂正依頼" ? "この内容で変更する" : "この内容で承認する") : "変更する"}</Button></div>
+                        {request && <p className="-mt-2 text-right text-xs text-slate-500">押すと本人のお知らせ掲示板に「{request.type === "訂正依頼" ? "変更しました" : "承認されました"}」と届きます</p>}
+                        {request && <div className="space-y-2 rounded-xl border border-red-300 p-3">
+                          <b className="text-sm text-red-700">変更できない場合</b>
+                          <select className="h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm" value={overviewReason} onChange={event => setOverviewReason(event.target.value)}><option value="">理由を選ぶ（任意）</option>{REASONS.map(value => <option key={value} value={value}>{value}</option>)}</select>
+                          <Input placeholder="ひとこと足す（任意）" value={overviewReasonText} onChange={event => setOverviewReasonText(event.target.value)} />
+                          <Button type="button" variant="outline" className="w-full border-2 border-red-600 font-bold text-red-700" onClick={() => rejectOverviewRequest(request)}>{request.type === "訂正依頼" ? "変更できない（却下する）" : "却下する"}</Button>
+                          <p className="text-xs text-slate-500">本人のお知らせ掲示板に「{request.type === "訂正依頼" ? "変更できません" : "却下されました"}」と理由が届きます。シフトは変わりません。</p>
+                        </div>}
+                      </form>; })()}
                     </dialog>
                     {dayLabelDialog && appSession.role === "admin" && (() => {
                       const dlgDate = dayLabelDialog;
@@ -2367,8 +2470,8 @@ export default function App() {
                                   const shiftText = displayShift(actualShiftText, workTimes, shiftDisplayMode);
                                   const compactParts = shiftText.includes("～") ? shiftText.split("～") : [shiftText];
                                   return (
-                                    <TableCell key={emp.id} className={`dashboard-employee-cell py-1 px-1 border-r border-border ${leaveRequest ? "has-leave-request" : ""} ${appSession.role === "admin" && staffingWarnings?.byCell[`${emp.id}|${dateStr}`] ? "ring-2 ring-inset ring-amber-400" : ""}`} data-staffing-cell={appSession.role === "admin" ? staffingWarnings?.byCell[`${emp.id}|${dateStr}`]?.join("／") : undefined} title={`${staffingWarnings?.byCell[`${emp.id}|${dateStr}`] && appSession.role === "admin" ? `⚠ ${staffingWarnings.byCell[`${emp.id}|${dateStr}`].join("／")}　` : ""}${actualShiftText}${leaveRequest ? `・${leaveRequest.type}${leaveRequest.desiredWorkStart && leaveRequest.desiredWorkEnd ? ` ${leaveRequest.desiredWorkStart}〜${leaveRequest.desiredWorkEnd}` : ""}（${leaveRequest.status}）` : ""}`}>
-                                      <button type="button" disabled={!isFromAdmin || !overviewEditing || isLocked || periodStatusLoading || appSession.role !== "admin"} onClick={() => openOverviewCell(emp, dateStr)} aria-label={`${emp.displayName || emp.name} ${format(date, "M月d日")} ${actualShiftText || (s?.shift === "休み" ? "休み" : "なし")}の勤務を変更`} className={`w-full min-h-9 text-[12px] py-1.5 rounded-sm disabled:cursor-default enabled:cursor-pointer enabled:ring-1 enabled:ring-amber-500 enabled:bg-amber-50 enabled:hover:bg-amber-100 enabled:focus-visible:outline-2 enabled:focus-visible:outline-amber-600 text-center font-bold leading-none ${
+                                    <TableCell key={emp.id} className={`dashboard-employee-cell py-1 px-1 border-r border-border ${leaveRequest ? "has-leave-request" : ""} ${leaveRequest?.status === "申請中" && leaveRequest.type !== "希望なし" ? "is-pending-request" : ""} ${appSession.role === "admin" && staffingWarnings?.byCell[`${emp.id}|${dateStr}`] ? "ring-2 ring-inset ring-amber-400" : ""}`} data-staffing-cell={appSession.role === "admin" ? staffingWarnings?.byCell[`${emp.id}|${dateStr}`]?.join("／") : undefined} title={`${staffingWarnings?.byCell[`${emp.id}|${dateStr}`] && appSession.role === "admin" ? `⚠ ${staffingWarnings.byCell[`${emp.id}|${dateStr}`].join("／")}　` : ""}${actualShiftText}${leaveRequest ? `・${leaveRequest.type}${leaveRequest.desiredWorkStart && leaveRequest.desiredWorkEnd ? ` ${leaveRequest.desiredWorkStart}〜${leaveRequest.desiredWorkEnd}` : ""}（${leaveRequest.status}）` : ""}`}>
+                                      <button type="button" disabled={!isFromAdmin || periodStatusLoading || appSession.role !== "admin" || ((!overviewEditing || isLocked) && !(leaveRequest?.status === "申請中" && leaveRequest.type !== "希望なし"))} onClick={() => openOverviewCell(emp, dateStr)} aria-label={`${emp.displayName || emp.name} ${format(date, "M月d日")} ${actualShiftText || (s?.shift === "休み" ? "休み" : "なし")}の勤務を変更`} className={`w-full min-h-9 text-[12px] py-1.5 rounded-sm disabled:cursor-default enabled:cursor-pointer enabled:ring-1 enabled:ring-amber-500 enabled:bg-amber-50 enabled:hover:bg-amber-100 enabled:focus-visible:outline-2 enabled:focus-visible:outline-amber-600 text-center font-bold leading-none ${
                                         s?.shift === "有休" 
                                           ? "bg-red-100 text-red-800 border border-red-200" 
                                           : paidLeaveValue(s) === 0.5
@@ -2594,6 +2697,9 @@ export default function App() {
                           </Button>
                           <Button className="h-11 bg-green-600 hover:bg-green-700 text-white font-bold" onClick={() => void downloadExcel()}>
                             <Grid3X3 className="w-4 h-4 mr-2" />Excel出力
+                          </Button>
+                          <Button variant="outline" className="h-11 font-bold" onClick={() => void downloadImage()}>
+                            <Download className="w-4 h-4 mr-2" />画像で保存（LINE用）
                           </Button>
                         </div>
                       </div>

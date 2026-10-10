@@ -1,5 +1,5 @@
 import { templateStorage } from "../lib/template-storage";
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { format } from "date-fns";
 import { ja } from "date-fns/locale/ja";
 import { Send, Trash2 } from "lucide-react";
@@ -67,10 +67,20 @@ export function LeaveRequestView({ employees, dates, requests, remarks, locked, 
   const [error, setError] = useState("");
   const [showHelp, setShowHelp] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches && templateStorage.getItem(HELP_STORAGE_KEY) !== "yes");
   const [dismissHelp, setDismissHelp] = useState(false);
+  const noteRef = useRef<HTMLElement | null>(null);
+  const [noteInView, setNoteInView] = useState(false);
 
   useEffect(() => {
     if (operatorId) templateStorage.setItem(noteKey, JSON.stringify({ drafts, times, comment }));
   }, [noteKey, operatorId, drafts, times, comment]);
+
+  useEffect(() => {
+    const node = noteRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(entries => setNoteInView(entries.some(entry => entry.isIntersecting && entry.intersectionRatio > 0.6)), { threshold: [0, 0.6, 1] });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [employeeName, view]);
 
   const periodStart = dates[0] ? format(dates[0], "yyyy-MM-dd") : "";
   const periodEnd = dates.length ? format(dates[dates.length - 1], "yyyy-MM-dd") : "";
@@ -199,7 +209,7 @@ export function LeaveRequestView({ employees, dates, requests, remarks, locked, 
         })}
       </div>}
 
-      <section className="leave-note-card" aria-label="提出ノート">
+      <section ref={noteRef} className="leave-note-card" aria-label="提出ノート">
         <h2>提出ノート</h2>
         {draftEntries.length === 0 ? <p className="leave-empty">自分の欄で希望する日を押し、希望を選ぶとここに表示されます。</p> : <div className="leave-note-lines">
           {draftEntries.map(([date, draft]) => <div key={date} className={draft.type === "出勤希望" && (!times[date]?.start || !times[date]?.end) ? "work-time-missing" : ""}>
@@ -222,6 +232,11 @@ export function LeaveRequestView({ employees, dates, requests, remarks, locked, 
         </div>}
       </section>
     </> : <p className="leave-request-card">操作員の情報を取得できません。ログインし直してください。</p>}
+
+    {draftEntries.length > 0 && !noteInView && !submitting && <div className="leave-pending-bar" role="status">
+      <p><strong>まだ提出は完了していません</strong><span>選択中：{draftEntries.map(([date, draft]) => `${format(new Date(`${date}T00:00:00`), "M/d")} ${draft.type.replace("希望", "")}`).join("、")}</span></p>
+      <button type="button" onClick={() => noteRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}>提出ノートへ進む</button>
+    </div>}
 
     {showHelp && <div className="leave-help-overlay" role="presentation">
       <div className="leave-help-dialog" role="dialog" aria-modal="true" aria-labelledby="leave-help-title">

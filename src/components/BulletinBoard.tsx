@@ -36,7 +36,7 @@ export function BulletinBoard({ periods, isEditor, visibility = "immediate", cor
   const canShow = (item: LeaveRequest) => {
     if (item.status === "取消") return false;
     const own = item.employeeId && operatorId ? item.employeeId === operatorId : item.employeeName === operatorName;
-    if (item.status === "却下") return isEditor && !compact;
+    if (item.status === "却下") return (isEditor && !compact) || !!own;
     if (item.type === "訂正依頼") return isEditor || own || correctionVisibility === "all";
     if (item.commentVisibility === "editors" && !isEditor && !own) return false;
     if (visibility === "private") return isEditor || own;
@@ -46,10 +46,10 @@ export function BulletinBoard({ periods, isEditor, visibility = "immediate", cor
   const visiblePeriods = compact ? periods.slice(0, 1) : periods.slice(0, 3);
   const corrections = (compact && pendingCorrections ? pendingCorrections : visiblePeriods.flatMap(period => period.requests)).filter(item => item.type === "訂正依頼" && item.status === "申請中" && canShow(item));
   const renderItem = (item: LeaveRequest, history = false) => <article key={item.id} className={`rounded-xl border p-3 text-sm ${item.type === "訂正依頼" && item.status === "申請中" ? "border-red-300 bg-red-50" : "border-amber-100 bg-amber-50"}`}>
-    <div className="flex flex-wrap items-center gap-2"><strong>{item.employeeName}</strong><span>{item.date ? format(new Date(`${item.date}T00:00:00`), "M/d（E）", { locale: ja }) : "この期間"}</span><span className={`rounded-full px-2 py-0.5 text-xs font-bold ${item.type === "訂正依頼" ? "bg-red-200 text-red-800" : "bg-amber-100 text-amber-800"}`}>{item.type}</span>{item.status !== "申請中" && <span className={`text-xs font-bold ${item.status === "却下" ? "text-red-700" : "text-green-700"}`}>{item.status === "承認" ? "承認されました" : item.status === "却下" ? "却下されました" : "対応済み"}</span>}</div>
+    <div className="flex flex-wrap items-center gap-2"><strong>{item.employeeName}</strong><span>{item.date ? format(new Date(`${item.date}T00:00:00`), "M/d（E）", { locale: ja }) : "この期間"}</span><span className={`rounded-full px-2 py-0.5 text-xs font-bold ${item.type === "訂正依頼" ? "bg-red-200 text-red-800" : "bg-amber-100 text-amber-800"}`}>{item.type}</span>{item.status !== "申請中" && <span className={`text-xs font-bold ${item.status === "却下" ? "text-red-700" : "text-green-700"}`}>{item.type === "訂正依頼" ? (item.status === "却下" ? "変更できません" : "変更しました") : item.status === "承認" ? "承認されました" : item.status === "却下" ? "却下されました" : "対応済み"}</span>}</div>
     {item.comment && <p className="mt-1 whitespace-pre-wrap text-xs text-slate-700">{item.comment}{isEditor && item.commentVisibility === "editors" ? "（編集者のみ）" : ""}</p>}
     {item.type === "出勤希望" && item.desiredWorkStart && item.desiredWorkEnd && <p className="mt-1 text-xs">{item.desiredWorkStart}〜{item.desiredWorkEnd}</p>}
-    {item.status === "却下" && item.rejectionReason && <p className="mt-1 text-xs text-red-700">却下理由：{item.rejectionReason}</p>}
+    {item.status === "却下" && item.rejectionReason && <p className="mt-1 text-xs text-red-700">{item.type === "訂正依頼" ? "理由" : "却下理由"}：{item.rejectionReason}</p>}
     {item.type === "訂正依頼" && item.status === "申請中" && isEditor && onResolve && <button type="button" disabled={resolving === item.id} className="mt-2 rounded-lg border border-red-300 bg-white px-3 py-1 text-xs font-bold text-red-700" onClick={async () => { setResolving(item.id); try { await onResolve(item); } finally { setResolving(null); } }}>確認した（対応済みにする）</button>}
     {!(item.type === "訂正依頼" && item.status === "申請中") && confirmButton(requestKey(item), history)}
   </article>;
@@ -63,9 +63,10 @@ export function BulletinBoard({ periods, isEditor, visibility = "immediate", cor
   if (compact) {
     const period = visiblePeriods[0];
     const visible = period?.requests.filter(canShow).filter(item => !(item.type === "訂正依頼" && item.status === "申請中")).filter(item => !isConfirmed(requestKey(item))) || [];
-    return <section className="overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
+    const unconfirmed = noticeCards.length + corrections.length + visible.length;
+    return <section data-unconfirmed={unconfirmed > 0 ? "true" : undefined} className={`overflow-hidden rounded-2xl bg-white shadow-sm ${unconfirmed > 0 ? "border-2 border-red-600" : "border border-amber-200"}`}>
       <div className="home-bulletin-heading bg-amber-50 px-5 py-4">
-        <h2 className="flex items-center gap-2 text-lg font-black text-slate-900"><MessageSquareText className="h-5 w-5 text-amber-600" />お知らせ掲示板</h2>
+        <h2 className="flex items-center gap-2 text-lg font-black text-slate-900"><MessageSquareText className="h-5 w-5 text-amber-600" />お知らせ掲示板{unconfirmed > 0 && <span className="rounded-full bg-red-600 px-2.5 py-0.5 text-xs font-black text-white">未確認 {unconfirmed}件</span>}</h2>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <span className="text-xs font-bold text-slate-500">対象期間</span>
           <strong className="home-bulletin-period text-base font-black text-amber-900 sm:text-lg">{period?.label || "期間未設定"}</strong>
