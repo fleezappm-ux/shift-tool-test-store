@@ -1697,23 +1697,25 @@ export default function App() {
       const sameAsCurrent = dateRange.length > 0 && getDateStr(outputDateRange[0]) === getDateStr(dateRange[0]);
       const kind = sameAsCurrent && isLocked ? "確定シフト" : "シフト案";
       const rangeLabel = `${format(outputDateRange[0], "M/d")}〜${format(outputDateRange[outputDateRange.length - 1], "M/d")}`;
+      const bandRemarks = buildDisplayRemarks([], specialDayRules, outputDateRange);
       const holidays = new Set(getJapaneseHolidayDates(outputDateRange[0], outputDateRange[outputDateRange.length - 1]));
       const blob = await renderShiftImage({
-        title: `${storeMaster.storeName || "シフト"}　${kind}`,
-        subtitle: `${rangeLabel}　出力日 ${format(new Date(), "M/d")}`,
+        title: `${storeMaster.storeName || "シフト"}　${format(outputDateRange[0], "M月分")}　${kind}`,
+        subtitle: `${format(outputDateRange[0], "yyyy年M/d")}（${format(outputDateRange[0], "E", { locale: ja })}）〜${format(outputDateRange[outputDateRange.length - 1], "M/d")}（${format(outputDateRange[outputDateRange.length - 1], "E", { locale: ja })}）　出力日 ${format(new Date(), "M/d")}`,
         employees: list.map(item => item.displayName || item.name),
         rows: outputDateRange.map(date => {
-          const gr = getGlobalRemark(date);
+          const gr = bandRemarks.find(item => item.date === getDateStr(date));
           return {
             label: format(date, "M/d"),
             weekday: format(date, "E", { locale: ja }),
             holiday: date.getDay() === 0 || holidays.has(getDateStr(date)),
             remark: gr?.type || "",
+            color: gr?.color,
             cells: list.map(item => { const s = getShift(item, date); return s?.shift ? leavePrefix(s) + (s.shift === "任意入力" ? (s.customShiftText || "") : s.shift) : ""; }),
           };
         }),
       });
-      const fileName = `${kind}_${format(outputDateRange[0], "yyyyMMdd")}-${format(outputDateRange[outputDateRange.length - 1], "yyyyMMdd")}.png`;
+      const fileName = `${kind}_${format(outputDateRange[0], "yyyy年M月分")}_${format(outputDateRange[0], "yyyyMMdd")}-${format(outputDateRange[outputDateRange.length - 1], "yyyyMMdd")}.png`;
       const file = new File([blob], fileName, { type: "image/png" });
       if (share && typeof navigator !== "undefined" && navigator.canShare?.({ files: [file] })) {
         try { await navigator.share({ files: [file], title: `${kind} ${rangeLabel}` }); return; } catch (cause) { if (cause instanceof DOMException && cause.name === "AbortError") return; }
