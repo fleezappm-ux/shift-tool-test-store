@@ -63,7 +63,12 @@ export function StoreMasterSettings({ master, onMasterChange, period, periodDraf
       <label className={heading}>店舗名</label><p className={description}>店舗名を入れてください。</p>
       <Input className="mt-3 h-11 rounded-xl text-sm" placeholder="店舗名を入れてください" value={draft.storeName === "店舗名を設定" || draft.storeName === "薬局名を設定" ? "" : draft.storeName} onChange={event => setDraft(current => ({ ...current, storeName: event.target.value }))} />
       <label className="mt-4 flex items-center gap-3 text-sm font-bold"><input type="checkbox" className="h-5 w-5" checked={draft.showStoreNameOnHome} onChange={event => setDraft(current => ({ ...current, showStoreNameOnHome: event.target.checked }))} />店舗名＋シフトをホームに表示</label>
-      <p className={description}>OFFならホームの見出しは「シフト」です。店舗名が空欄の場合も「シフト」になります。</p>
+      <p className={description}>ホーム画面の一番上の見出しを切り替えます。</p>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-center text-xs" aria-label="ホーム見出しの見本">
+        <div className={`rounded-xl border-2 p-3 ${draft.showStoreNameOnHome ? "border-blue-500 bg-blue-50" : "border-slate-200 bg-slate-50 opacity-60"}`}><div className="mb-1 font-bold text-slate-500">チェックあり</div><div className="text-base font-black text-slate-900">{shownName(draft.storeName).trim() || "あおい薬局"} シフト</div></div>
+        <div className={`rounded-xl border-2 p-3 ${!draft.showStoreNameOnHome ? "border-blue-500 bg-blue-50" : "border-slate-200 bg-slate-50 opacity-60"}`}><div className="mb-1 font-bold text-slate-500">チェックなし</div><div className="text-base font-black text-slate-900">シフト</div></div>
+      </div>
+      <p className={description}>店舗名が空欄の場合は、チェックがあっても「シフト」と表示されます。</p>
     </div>
     <div className={panel}>
       <h4 className={heading}>シフト表の月の区切り</h4><p className={description}>シフト表を「毎月何日から何日まで」で1か月分とするか選びます。給料の締め日に合わせるお店が多いです。例：毎月1日 → 月末まで／毎月21日 → 翌月20日まで。終了日は自動で決まり、画面・CSV・Excelも同じ期間になります。</p>
@@ -75,8 +80,8 @@ export function StoreMasterSettings({ master, onMasterChange, period, periodDraf
     </div>
     <div className={panel}>
       <h4 className={heading}>お店のお休みの日</h4><p className={description}>お店が休みの日（日曜、祝日、年末年始、毎月○日など）を決めます。休みの日はカレンダーに色が付いて、シフト案の自動作成でも休みとして扱えます。「お休みなし」でもOKです。</p>
-      <Button variant="outline" className="mt-3" onClick={onOpenBandSettings}>お店のお休みの日を決める →</Button>
-      <p className={description}>※ここで変更中の内容は、先に下の「店舗マスタを保存」を押してから移動してください。</p>
+      <p className="mt-3 rounded-lg bg-blue-50 p-3 text-xs leading-5 text-blue-900">定休日や、毎年決まっている休みは、<b>「設定 → シフトマスタ → お店のお休みの日・色付け」</b>で、カレンダーの色として決めます。次の「はじめの準備」でも案内します。<br />今すぐ設定したい方は<button type="button" className="mx-1 font-bold underline" onClick={onOpenBandSettings}>こちら（お休みの日の設定へ移動）</button>から。</p>
+      {dirty && <p className="mt-2 text-xs font-bold text-amber-800">※いま入力中の店舗名・月の区切りが保存されていません。移動する前に、下の「店舗マスタを保存」を押してください。</p>}
     </div>
     <SaveStatus dirty={dirty} saving={busy || saving} />
     <div className={(dirty || busy || saving) ? "h-20 md:hidden" : "hidden"} /><Button className={`fixed inset-x-4 bottom-[76px] z-40 h-12 font-bold shadow-xl md:sticky md:inset-x-auto md:bottom-2 md:z-10 md:w-full ${(dirty || busy || saving) ? "" : "max-md:hidden"}`} disabled={saving || busy || !dirty} onClick={() => void save()}><Save className="mr-2 h-4 w-4" />{busy ? "保存中…" : "店舗マスタを保存"}</Button>

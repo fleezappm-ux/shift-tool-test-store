@@ -1085,14 +1085,16 @@ export default function App() {
     try { await handleSaveSpecialDayRules(next); setDayLabelDialog(null); } catch { /* 失敗の通知は保存処理が出します */ }
   };
 
+  const [rolesUnsaved, setRolesUnsaved] = useState(false);
   const [setupHidden, setSetupHidden] = useState(() => templateStorage.getItem("setup_checklist_hidden") === "1");
   const [setupSeen, setSetupSeen] = useState<string[]>(() => { try { const v = JSON.parse(templateStorage.getItem("setup_checklist_seen") || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } });
   const markSetupSeen = (key: string) => setSetupSeen(current => { if (current.includes(key)) return current; const next = [...current, key]; templateStorage.setItem("setup_checklist_seen", JSON.stringify(next)); return next; });
   const setupSteps = [
     { title: "管理者用の接続キーを入れる", hint: "「その他設定」で接続キーを入れて「保存して接続を確認」を押します。✓が出れば成功です（端末ごとに1回）", done: apiKeyVerified, onClick: () => goSettings("other") },
+    { title: "役職を決めて保存する", hint: "薬剤師・事務など、お店で使う役職を決めます。従業員を登録する前に、先に決めておくと、登録のときに選べます（このままでよければ、開いて「役職を保存」を押します）", done: setupSeen.includes("roles-saved"), onClick: () => goSettings("employee") },
     { title: "従業員を登録して保存する", hint: "最初は操作員1名だけです。名前を自分の名前に直して、ほかの従業員を追加し、最後に「保存」を押します（1人だけのお店でも、名前を直して保存すれば完了）", done: setupSeen.includes("employee-saved"), onClick: () => goSettings("employee") },
     { title: "店舗名と月の区切りを決めて保存する", hint: "店舗名と、シフト表の月の区切り（例：毎月1日〜月末）を決めて「保存」を押します", done: setupSeen.includes("store-saved"), onClick: () => goSettings("store") },
-    { title: "帯色（お店のお休みの日）を決めて保存する", hint: "日曜・祝日など、カレンダーに色をつける休みの日を決めます。休みがなければ「定休日はない」にチェックして保存します", done: setupSeen.includes("holiday-saved"), onClick: () => goSettings("special") },
+    { title: "帯色（お店のお休みの日）を決めて保存する", hint: "定休日・日曜・祝日・年末年始・お盆など、カレンダーに色をつける休みの日を決めます。休みがなければ「曜日・祝日で決まった休みはない」にチェックして保存します", done: setupSeen.includes("holiday-saved"), onClick: () => goSettings("special") },
     { title: "勤務時間を確認する", hint: "早番・遅番などの初期の勤務時間を、自分のお店に合わせて直します。このままでよければ、開いて「このままでOK」を押します", done: setupSeen.includes("worktime-confirmed"), onClick: () => goSettings("worktime") },
     { title: "勤務パターン（くり返す勤務の型）を見る", hint: "毎週・2週間ごとなど、くり返す勤務の型です。使わないお店は、開いて見るだけでOKです（見たら✓がつきます）", done: setupSeen.includes("cycle-seen"), onClick: () => { markSetupSeen("cycle-seen"); goSettings("operations"); } },
     { title: "シフトを作ってみる", hint: "「シフト作成」で、1日だけ勤務を入れてみましょう", done: employees.some(employee => employee.shifts.some(shift => shift.shift || shift.customShiftText)), onClick: () => requestEditAccess(() => { setActiveTab("dashboard"); setIsFromAdmin(true); }) },
@@ -1361,6 +1363,7 @@ export default function App() {
 
   const handleSaveRoles = async (items: ShiftRole[]) => {
     const saved = await saveShiftRoles(items);
+    markSetupSeen("roles-saved");
     setRoles(saved.roles);
     setEmployeeMaster(saved.employees);
     setEmployees(previous => mergeEmployeesWithMaster(previous, saved.employees));
@@ -2438,7 +2441,7 @@ export default function App() {
                 <CardContent className="p-6"><BoardSettings leave={storeMaster.leaveRequestBoardVisibility || "immediate"} notice={adminNoticeVisibility} correction={correctionVisibility} onSaveLeave={value => handleSaveBoardVisibility(value)} onSaveNotice={async value => { const saved = await saveAdminNoticeVisibility(value); setAdminNoticeVisibility(saved); return saved; }} onSaveCorrection={async value => { const saved = await saveCorrectionVisibility(value); setCorrectionVisibility(saved); return saved; }} /></CardContent></Card>
               </motion.div>
             ) : activeTab === "admin" && settingsPage === "employee" ? (
-              <motion.div key="settings-employee" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4"><SettingsHead title="従業員マスタ" description="従業員の登録、役職、ホームの表示" backLabel="設定へ戻る" onBack={() => goSettings("menu")} /><EmployeeMasterSettings loadError={employeeMasterLoadError} employees={employeeMaster} roles={roles} onSave={handleSaveEmployeeMaster} operatorId={appSession?.employeeId} /><RoleAndHomeSettings roles={roles} layout={homeLayout} onSaveRoles={handleSaveRoles} onSaveLayout={async value => setHomeLayout(await saveHomeLayout(value))} /></motion.div>
+              <motion.div key="settings-employee" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4"><SettingsHead title="従業員マスタ" description="従業員の登録、役職、ホームの表示" backLabel="設定へ戻る" onBack={() => goSettings("menu")} /><RoleAndHomeSettings part="roles" roles={roles} layout={homeLayout} onRolesDirtyChange={setRolesUnsaved} onSaveRoles={handleSaveRoles} onSaveLayout={async value => setHomeLayout(await saveHomeLayout(value))} /><EmployeeMasterSettings rolesUnsaved={rolesUnsaved} loadError={employeeMasterLoadError} employees={employeeMaster} roles={roles} onSave={handleSaveEmployeeMaster} operatorId={appSession?.employeeId} /><RoleAndHomeSettings part="home" roles={roles} layout={homeLayout} onSaveRoles={handleSaveRoles} onSaveLayout={async value => setHomeLayout(await saveHomeLayout(value))} /></motion.div>
             ) : activeTab === "admin" && settingsPage === "shift" ? (
               <motion.div key="settings-shift" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4"><SettingsHead title="シフトマスタ" description="シフト作成のもとになる設定" backLabel="設定へ戻る" onBack={() => goSettings("menu")} /><div className="grid gap-3 sm:grid-cols-2">{[
                   { key: "worktime", icon: Clock, title: "勤務時間設定", description: "早番・遅番などの時間と略称" },

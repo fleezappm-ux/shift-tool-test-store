@@ -6,8 +6,8 @@ import { HomeLayout, ShiftRole } from "../lib/employee-master-sync";
 import { SaveStatus } from "./SaveStatus";
 import { useUnsavedGuard } from "../lib/unsaved";
 
-export function RoleAndHomeSettings({ roles, layout, onSaveRoles, onSaveLayout }: {
-  roles: ShiftRole[]; layout: HomeLayout;
+export function RoleAndHomeSettings({ roles, layout, onSaveRoles, onSaveLayout, part = "both", onRolesDirtyChange }: {
+  roles: ShiftRole[]; layout: HomeLayout; part?: "roles" | "home" | "both"; onRolesDirtyChange?: (dirty: boolean) => void;
   onSaveRoles: (value: ShiftRole[]) => Promise<void>;
   onSaveLayout: (value: HomeLayout) => Promise<void>;
 }) {
@@ -19,6 +19,7 @@ export function RoleAndHomeSettings({ roles, layout, onSaveRoles, onSaveLayout }
   const rolesDirty = JSON.stringify(drafts) !== JSON.stringify(roles);
   const layoutDirty = JSON.stringify(homeDraft) !== JSON.stringify(layout);
   useUnsavedGuard("role-master", rolesDirty);
+  useEffect(() => { onRolesDirtyChange?.(rolesDirty); return () => onRolesDirtyChange?.(false); }, [rolesDirty]);
   useUnsavedGuard("home-layout", layoutDirty);
   const position = (id: string) => !homeDraft.visible ? "none" : homeDraft.columns[0]?.includes(id) ? "left" : homeDraft.columns[1]?.includes(id) ? "right" : "none";
   const setPosition = (id: string, value: string) => setHomeDraft(current => ({
@@ -29,9 +30,10 @@ export function RoleAndHomeSettings({ roles, layout, onSaveRoles, onSaveLayout }
     })
   }));
   return <div className="space-y-5">
-    <section id="role-editor" className="rounded-2xl border bg-white p-5">
-      <h3 className="font-black">役職プルダウン編集</h3>
-      <p className="mt-1 text-xs text-slate-600">名前だけ変更しても登録済み従業員との紐付けは維持されます。役職は業種に合わせて自由に追加・変更できます（例：店長・事務・スタッフ）。</p>
+    {part !== "home" && <section id="role-editor" className="rounded-2xl border-2 border-blue-300 bg-white p-5">
+      <h3 className="font-black">役職の設定（従業員を登録する前に、先にここで決めます）</h3>
+      <p className="mt-1 text-xs leading-5 text-slate-600">お店で使う役職を決めます（例：薬剤師・事務・パート）。ここで決めた役職が、下の「従業員登録」の「役職を選択」に出ます。</p>
+      <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold leading-5 text-amber-900">役職を変えたら、必ず「役職を保存」を押してください。保存するまでは、従業員登録の選択肢には出ません。</p>
       <div className="mt-4 space-y-2">{drafts.map((role, index) => <div key={role.id} className="flex items-center gap-2">
         <b className="w-7 text-center text-slate-500">{index + 1}</b><Input aria-label={`役職${index + 1}`} value={role.name} onChange={event => setDrafts(current => current.map(item => item.id === role.id ? { ...item, name: event.target.value } : item))} />
         <Button variant="outline" disabled={index === 0} onClick={() => setDrafts(current => { const copy = [...current]; [copy[index - 1], copy[index]] = [copy[index], copy[index - 1]]; return copy; })}>↑</Button>
@@ -41,15 +43,19 @@ export function RoleAndHomeSettings({ roles, layout, onSaveRoles, onSaveLayout }
       <SaveStatus className="mt-4" dirty={rolesDirty} saving={busy} />
       <div className="mt-3 flex gap-2"><Button variant="outline" onClick={() => setDrafts(current => [...current, { id: crypto.randomUUID(), name: "" }])}>＋ 役職を追加</Button>
         <Button disabled={busy || !rolesDirty} onClick={async () => { if (drafts.some(role => !role.name.trim())) return toast.error("役職名を入力してください"); setBusy(true); try { await onSaveRoles(drafts); toast.success("役職を保存しました"); } catch(error) { toast.error(error instanceof Error ? error.message : "役職を保存できませんでした"); } finally { setBusy(false); } }}>役職を保存</Button></div>
-    </section>
-    <section className="rounded-2xl border bg-white p-5">
+    </section>}
+    {part !== "roles" && <section className="rounded-2xl border bg-white p-5">
       <h3 className="font-black">ホーム「本日の出勤一覧」の表示設定</h3>
-      <p className="mt-1 text-xs text-slate-600">スマホは最大2列。各役職を左・右・非表示から選びます。役職が1種類なら1列に広がります。</p>
+      <p className="mt-1 text-xs leading-5 text-slate-600">ホーム画面の「今日の出勤者」を、役職ごとに左右2つの列に分けて並べます。下の見本は、いまの設定でのホームの見え方です。</p>
+      <div className="mt-3 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 p-3" aria-label="ホーム画面の見本">
+        <div className="mb-2 text-center text-[11px] font-bold text-slate-500">▼ ホーム画面の見本（本日の出勤一覧）</div>
+        {homeDraft.visible ? <div className="grid grid-cols-2 gap-2">{[0, 1].map(index => <div key={index} className="min-h-16 rounded-lg border bg-white p-2"><div className="mb-1 text-[10px] font-bold text-slate-400">{index === 0 ? "左の列" : "右の列"}</div>{(homeDraft.columns[index] || []).map(id => roles.find(role => role.id === id)).filter(Boolean).map(role => <div key={role!.id} className="mb-1 rounded bg-blue-50 px-2 py-1 text-xs font-bold text-blue-900">{role!.name}の人たち</div>)}{!(homeDraft.columns[index] || []).length && <div className="text-[11px] text-slate-300">（なし）</div>}</div>)}</div> : <div className="py-3 text-center text-xs text-slate-400">出勤一覧は表示されません</div>}
+      </div>
       <label className="mt-4 flex items-center gap-2 text-sm"><input type="checkbox" checked={homeDraft.visible} onChange={event => setHomeDraft(current => ({ ...current, visible: event.target.checked }))} />出勤一覧を表示する</label>
       {homeDraft.visible && <div className="mt-4 space-y-2">{roles.map(role => <label key={role.id} className="flex items-center justify-between gap-3 text-sm"><span>{role.name}</span><select className="h-10 rounded-lg border bg-white px-3" value={position(role.id)} onChange={event => setPosition(role.id, event.target.value)}><option value="left">左列</option><option value="right">右列</option><option value="none">表示しない</option></select></label>)}</div>}
       <SaveStatus className="mt-4" dirty={layoutDirty} saving={busy} />
       <Button className="mt-3" disabled={busy || !layoutDirty} onClick={async () => { setBusy(true); try { await onSaveLayout(homeDraft); toast.success("ホームの表示を保存しました"); } catch(error) { toast.error(error instanceof Error ? error.message : "表示設定を保存できませんでした"); } finally { setBusy(false); } }}>表示設定を保存</Button>
-    </section>
+    </section>}
   </div>;
 }
 
