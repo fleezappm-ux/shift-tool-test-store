@@ -31,6 +31,17 @@ export function SpecialDaySettings({ rules, employees, loading, onSave }: Props)
   useEffect(() => { setDrafts(rules); }, [rules]);
   const [baseline, setBaseline] = useState(() => JSON.stringify(rules));
   useEffect(() => setBaseline(JSON.stringify(rules)), [rules]);
+  const [openIds, setOpenIds] = useState<string[]>([]);
+  const isOpen = (id: string) => openIds.includes(id);
+  const toggleOpen = (id: string) => setOpenIds(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
+  const ruleSummary = (rule: SpecialDayRule) => {
+    const list = (items: string[]) => items.length > 4 ? `${items.slice(0, 4).join("、")} ほか${items.length - 4}日` : items.join("、");
+    const kind = rule.mode === "monthly" ? ((rule.monthDates || []).length ? `毎月 ${list((rule.monthDates || []).map(day => `${day}日`))}` : "毎月（日にち未選択）")
+      : rule.mode === "recurring" ? (rule.weekday >= 0 && rule.weeks.length ? `毎月 第${rule.weeks.join("・")} ${WEEKDAYS[rule.weekday]}曜日` : "毎月 第○曜日（未選択）")
+      : rule.mode === "yearly" ? ((rule.monthDays || []).length ? `毎年 ${list((rule.monthDays || []).map(day => `${Number(day.slice(0, 2))}/${Number(day.slice(3))}`))}` : "毎年（日付未登録）")
+      : (rule.dates.length ? `今年だけ ${list(rule.dates.map(date => `${Number(date.slice(5, 7))}/${Number(date.slice(8))}`))}` : "今年だけ（日付未登録）");
+    return `${kind}　／　${rule.restMode === "all" ? "自動作成：全員休み" : rule.restMode === "selected" ? "自動作成：一部の人が休み" : "自動作成：休みにしない"}`;
+  };
   const fixedRule = (rule: SpecialDayRule) => /^band-v3:closed-[0-6]$/.test(rule.id) || rule.id === "band-v3:holiday";
   const dirty = JSON.stringify(drafts) !== baseline;
   useUnsavedGuard("special-days", dirty);
@@ -71,6 +82,7 @@ export function SpecialDaySettings({ rules, employees, loading, onSave }: Props)
     const ruleId = rule.id;
     setDrafts(current => [...current, rule]);
     setNewRuleId(ruleId);
+    setOpenIds(current => [...current, ruleId]);
     setAddLocked(true);
     toast.success("新しいお休みの日を追加しました（②の一番下です）。名前と日にちを入れて、一番下の保存を押してください");
     window.setTimeout(() => {
@@ -168,11 +180,14 @@ export function SpecialDaySettings({ rules, employees, loading, onSave }: Props)
     <section className="mt-6 rounded-2xl border-2 border-amber-300 bg-white p-4 space-y-2 shadow-sm">
       <h3 className="-mx-4 -mt-4 mb-1 rounded-t-2xl bg-amber-500 px-4 py-2 font-black text-white">② 特別なお休みの日（棚卸し・年末年始・毎月15日など）</h3>
       <p className="text-xs leading-5 text-slate-600">曜日では決まらない休みは、ここに追加します。<b>例：</b>年末年始（12/29〜1/3）、お盆休み（8/13〜8/16）、棚卸しの日、創立記念日、毎月15日、第2水曜の休診日。追加すると、下の一覧の一番下にカードが増えます。</p>
+      <p className="rounded-lg bg-amber-50 p-2 text-xs font-bold leading-5 text-amber-900">カードの一番上の「カレンダーに出す文字」（見出し）が、そのまま全体シフトの日付の下に出る<b>備考</b>になります。例：「年末年始」と入れると、その期間の日付の下に「年末年始」と出ます。入力した内容は、カードを「折りたたむ」と一覧にまとまって見やすくなります。</p>
       {drafts.filter(rule => !fixedRule(rule)).length === 0 && <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">まだありません。必要なときだけ追加してください。</p>}
     </section>
     <div className="special-rule-list space-y-4">
       {drafts.filter(rule => !fixedRule(rule)).map(rule => <div style={{ borderLeft: "6px solid #f59e0b" }} id={`special-rule-${rule.id}`} key={rule.id} className={`special-rule-card ${newRuleId === rule.id ? "is-new" : ""}`}>
         {newRuleId === rule.id && <div className="special-new-label">ここに追加しました</div>}
+        <button type="button" aria-expanded={isOpen(rule.id)} className="flex w-full items-center gap-3 text-left" onClick={() => toggleOpen(rule.id)}><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{rule.name || "（名前なし）"}{!rule.enabled && <span className="ml-2 text-xs font-normal text-slate-400">（無効）</span>}</strong><small className="block truncate text-xs text-slate-500">{ruleSummary(rule)}</small></span><span className="shrink-0 rounded-lg border bg-white px-3 py-1.5 text-xs font-bold text-slate-700">{isOpen(rule.id) ? "▲ 折りたたむ" : "▼ 開く・直す"}</span></button>
+        {isOpen(rule.id) && <>
         <div className="special-rule-main"><Input value={rule.name} placeholder="カレンダーに出す文字（例：棚卸し）" aria-label="カレンダーに出す文字" onChange={event => update(rule.id, { name: event.target.value })} /><select aria-label="カレンダーの色" value={rule.color} onChange={event => update(rule.id, { color: event.target.value as SpecialDayColor })}>{COLORS.map(color => <option key={color.value} value={color.value}>{color.label}</option>)}</select><label><input type="checkbox" checked={rule.enabled} onChange={event => update(rule.id, { enabled: event.target.checked })} />有効</label><button type="button" className="special-delete" disabled={loading || deletingId === rule.id} aria-label={`${rule.name}を削除`} onClick={() => removeRule(rule.id)}><Trash2 className="w-4 h-4" /></button></div>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={rule.showName !== false} onChange={event => update(rule.id, { showName: event.target.checked })} />カレンダーのその日に、上の文字も表示する</label>
         {restFields(rule, patch => update(rule.id, patch))}
@@ -198,10 +213,11 @@ export function SpecialDaySettings({ rules, employees, loading, onSave }: Props)
           <Button type="button" className="mt-2 bg-blue-600 font-bold text-white hover:bg-blue-700" onClick={() => addDate(rule)}><Plus className="w-4 h-4 mr-1" />追加</Button>
           <div className="special-date-list">{rule.dates.length ? rule.dates.map((date, index) => <div key={date} className="special-date-chip"><span><b>{index + 1}</b>{displayDate(date)}</span><button type="button" aria-label={`${date}を削除`} onClick={() => update(rule.id, { dates: rule.dates.filter(value => value !== date) })}><Trash2 className="w-3.5 h-3.5" /></button></div>) : <small>登録日はまだありません</small>}</div>
         </div>}
+        </>}
       </div>)}
     </div>
           <Button disabled={addLocked || loading} onClick={add} className={addLocked ? "special-add-done h-12 w-full px-4 text-sm font-black" : "h-12 w-full bg-blue-600 px-4 text-sm font-black text-white shadow-md hover:bg-blue-700"}>{addLocked ? <Check className="w-4 h-4 mr-1" /> : <Plus className="w-4 h-4 mr-1" />}{addLocked ? "追加しました" : "お休みの日を追加"}</Button>
     <SaveStatus className="mt-3" dirty={dirty} saving={loading} />
-    <div className={(dirty || loading) ? "h-20 md:hidden" : "hidden"} /><Button className={`fixed inset-x-4 bottom-[76px] z-40 h-12 font-bold shadow-xl md:sticky md:inset-x-auto md:bottom-2 md:z-10 md:w-full ${(dirty || loading) ? "" : "max-md:hidden"}`} disabled={loading || !dirty || drafts.some(rule => !rule.name.trim() || !validRest(rule))} onClick={() => { const problem = findProblem(); if (problem) return toast.error(problem); void onSave(drafts); }}><Save className="w-4 h-4 mr-2" />お休みの日の設定を保存</Button>
+    <div className={(dirty || loading) ? "h-20 md:hidden" : "hidden"} /><Button className={`fixed inset-x-4 bottom-[76px] z-40 h-12 font-bold shadow-xl md:sticky md:inset-x-auto md:bottom-2 md:z-10 md:w-full ${(dirty || loading) ? "" : "max-md:hidden"}`} disabled={loading || !dirty || drafts.some(rule => !rule.name.trim() || !validRest(rule))} onClick={() => { const problem = findProblem(); if (problem) return toast.error(problem); void onSave(drafts).then(() => setOpenIds([]), () => undefined); }}><Save className="w-4 h-4 mr-2" />お休みの日の設定を保存</Button>
   </section>;
 }
