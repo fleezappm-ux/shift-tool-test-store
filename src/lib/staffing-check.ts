@@ -2,9 +2,10 @@ import { format } from "date-fns";
 import { Employee, SpecialDayRule, StaffingRules } from "../types";
 import { findSpecialDayRule } from "./special-day-utils";
 import { formatMinutes, parseShiftRange, toMinutes, uncoveredGaps } from "./shift-time";
+import { isOffShift } from "./off-types";
 
 const WEEK = ["日", "月", "火", "水", "木", "金", "土"];
-export const isWorkingShift = (shift?: string) => !!shift && shift !== "休み" && shift !== "有休" && shift !== "none";
+export const isWorkingShift = (shift?: string) => !!shift && !isOffShift(shift) && shift !== "none";
 
 export interface StaffingWarnings {
   /** 日付ごとの警告（人数不足など） */

@@ -8,6 +8,7 @@ import { WorkforceHeatmap } from "./WorkforceHeatmap";
 import { Button } from "@/components/ui/button";
 import { BulletinBoard } from "./BulletinBoard";
 import { AdminNotice } from "../lib/admin-notice-sync";
+import { isOffShift } from "../lib/off-types";
 
 interface HomeViewProps {
   employees: Employee[];
@@ -67,7 +68,7 @@ export function HomeView({
   const selectedRemark = remarks.find(item => item.date === selectedDate);
   const workingCount = orderedEmployees.filter(employee => {
     const label = shiftLabel(employee, selectedDate);
-    return label !== "未入力" && label !== "休み" && label !== "有休";
+    return label !== "未入力" && !isOffShift(label);
   }).length;
   const groups = [0, 1].map(index => orderedEmployees.filter(employee => {
     const roleId = employee.roleId || roles.find(role => role.name === employee.role)?.id;
@@ -77,7 +78,7 @@ export function HomeView({
   const renderRoster = (group: Employee[]) => group.map(employee => {
     const shift = employee.shifts.find(item => item.date === selectedDate);
     const label = shiftLabel(employee, selectedDate);
-    const isOff = label === "休み" || label === "有休";
+    const isOff = isOffShift(label);
     if (!shift?.shift || isOff) return null;
     return <button key={employee.id} className="home-roster-row" onClick={() => onEmployeeSelect(employee.id)}><span className="home-employee-name">{employee.displayName || employee.name}</span><span className="home-shift-value">{label}</span><ChevronRight className="w-4 h-4 text-slate-300" /></button>;
   });
@@ -114,7 +115,7 @@ export function HomeView({
           const remark = remarks.find(item => item.date === dateStr);
           const count = orderedEmployees.filter(employee => {
             const label = shiftLabel(employee, dateStr);
-            return label !== "未入力" && label !== "休み" && label !== "有休";
+            return label !== "未入力" && !isOffShift(label);
           }).length;
           const isHoliday = remark?.color === "red";
           return (

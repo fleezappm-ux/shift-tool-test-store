@@ -4,6 +4,7 @@ import { CalendarDays, Clock3 } from "lucide-react";
 import { Employee, GlobalRemark, LeaveRequest } from "../types";
 
 import { WorkTimeOption, ShiftDisplayMode, displayShift } from "../lib/work-time-options";
+import { isOffShift } from "../lib/off-types";
 interface Props { employee: Employee; dates: Date[]; remarks: GlobalRemark[]; workTimes: WorkTimeOption[]; displayMode: ShiftDisplayMode; requests?: LeaveRequest[]; }
 
 export function PersonalShiftList({ employee, dates, remarks, workTimes, displayMode, requests = [] }: Props) {
@@ -16,7 +17,7 @@ export function PersonalShiftList({ employee, dates, remarks, workTimes, display
       const request = requests.find(item => item.date === key && (item.status === "申請中" || item.status === "承認") && (item.employeeId ? item.employeeId === employee.id : item.employeeName === (employee.displayName || employee.name)));
       const requestText = request ? `${request.type === "訂正依頼" ? "⚠ " : ""}${request.type}${request.type === "出勤希望" && request.desiredWorkStart && request.desiredWorkEnd ? ` ${request.desiredWorkStart}〜${request.desiredWorkEnd}` : ""}（${request.status}）${request.comment ? `：${request.comment}` : ""}` : "";
       const label = shift?.shift === "任意入力" ? shift.customShiftText || "任意入力" : shift?.shift || "未入力";
-      const isOff = label === "休み" || label === "有休";
+      const isOff = isOffShift(label);
       return <div key={key} className={`personal-shift-row ${remark?.color === "red" ? "is-holiday" : ""} ${remark?.color ? `special-${remark.color}` : ""}`}>
         <div className="personal-date"><strong>{format(date, "M/d")}</strong><span>{format(date, "E", { locale: ja })}</span></div>
         <div className={`personal-shift-value ${isOff ? "is-off" : ""}`} title={label}>{displayShift(label, workTimes, displayMode)}</div>

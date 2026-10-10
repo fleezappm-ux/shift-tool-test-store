@@ -98,10 +98,13 @@ import { BoardPeriod, BulletinBoard } from "./components/BulletinBoard";
 import { MyPage } from "./components/MyPage";
 import { AutoDraftSettings as AutoDraftSettingsView } from "./components/AutoDraftSettings";
 import { WorkTimeSettings } from "./components/WorkTimeSettings";
+import { OffTypeSettings } from "./components/OffTypeSettings";
+import { fetchOffTypes, loadCachedOffTypes, saveOffTypes } from "./lib/off-types-sync";
 import { readWorkTimes, saveWorkTimes, workTimeValue, displayShift, ShiftDisplayMode } from "./lib/work-time-options";
 import { fetchWorkTimeMaster, saveWorkTimeMaster } from "./lib/work-time-sync";
 import { ShiftDisplayControl } from "./components/ShiftDisplayControl";
 import { fetchAutoDraftSettings, saveAutoDraftSettings } from "./lib/auto-draft-sync";
+import { allOffTypes, isOffShift } from "./lib/off-types";
 
 // 「質問に答えてシフト案を作る」は仕上げの段階で戻すため、いまは非表示にしています。
 const SHOW_SHIFT_WIZARD = false;
@@ -169,6 +172,15 @@ export default function App() {
     return () => { document.removeEventListener("visibilitychange", check); window.removeEventListener("focus", check); };
   }, []);
   // 勤務時間は、ログイン後に1回読み込んで端末に持っておく。設定画面を開くたびに「読み込み中」に戻さず、裏で最新を取り直すだけにする。
+  const [extraOffTypes, setExtraOffTypesState] = useState<string[]>(() => loadCachedOffTypes());
+  useEffect(() => {
+    if (!appSession?.token) return;
+    let cancelled = false;
+    const load = () => fetchOffTypes().then(types => { if (!cancelled) setExtraOffTypesState(types); }).catch(() => { /* 取得できないときは、端末に残っている前回の内容を使います */ });
+    void load();
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void load(); }, 60000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [appSession?.token]);
   const settingsPageRef = useRef(settingsPage);
   settingsPageRef.current = settingsPage;
   const refreshWorkTimeRef = useRef<() => Promise<void>>(async () => {});
@@ -1742,7 +1754,7 @@ export default function App() {
       const stats = emp.shifts
         .filter(s => outputDateRange.some(d => s.date.startsWith(getDateStr(d))))
         .reduce((acc, s) => {
-          const isWorking = s.shift && s.shift !== "休み" && s.shift !== "有休";
+          const isWorking = s.shift && !isOffShift(s.shift);
           const [wh, wm] = (s.workTime || "0:00").split(":").map(Number);
           return {
             workHours: acc.workHours + (isNaN(wh) ? 0 : wh + wm/60),
@@ -1854,7 +1866,7 @@ export default function App() {
       const stats = emp.shifts
         .filter(s => outputDateRange.some(d => s.date.startsWith(getDateStr(d))))
         .reduce((acc, s) => {
-          const isWorking = s.shift && s.shift !== "休み" && s.shift !== "有休";
+          const isWorking = s.shift && !isOffShift(s.shift);
           const [wh, wm] = (s.workTime || "0:00").split(":").map(Number);
           const [bh, bm] = (s.breakTime || "0:00").split(":").map(Number);
           return {
@@ -2276,7 +2288,7 @@ export default function App() {
                         <h2 id="overview-edit-title" className="text-lg font-bold">{employees.find(item => item.id === overviewCell.employeeId)?.displayName || employees.find(item => item.id === overviewCell.employeeId)?.name}・{overviewCell.date.slice(5).replace("-", "/")}の勤務</h2>
                         <label className="block text-sm font-bold">勤務<select autoFocus className="mt-2 h-12 w-full rounded-lg border border-slate-300 bg-white px-3" value={overviewShift} onChange={event => setOverviewShift(event.target.value)}>
                           <option value="none">なし</option>
-                          {[...new Set([...visibleWorkTimes, "有休", "休み", "任意入力", ...(overviewShift !== "none" ? [overviewShift] : [])])].map(value => <option key={value} value={value}>{displayShift(value, workTimes, "both")}</option>)}
+                          {[...new Set([...visibleWorkTimes, ...allOffTypes(), "任意入力", ...(overviewShift !== "none" ? [overviewShift] : [])])].map(value => <option key={value} value={value}>{displayShift(value, workTimes, "both")}</option>)}
                         </select></label>
                         {overviewShift === "任意入力" && <label className="block text-sm font-bold">勤務時間<Input className="mt-2" placeholder="例：9:00～17:00" value={overviewCustom} onChange={event => setOverviewCustom(event.target.value)} /></label>}
                         <p className="text-xs text-slate-500">変更後は自動保存され、個人シフトにも反映されます。</p>
@@ -2348,6 +2360,8 @@ export default function App() {
                                           ? "bg-red-100 text-red-800 border border-red-200" 
                                           : s?.shift === "休み"
                                             ? ""
+                                            : isOffShift(s?.shift)
+                                              ? "bg-purple-100 text-purple-800 border border-purple-200"
                                             : s?.shift === "任意入力"
                                               ? "text-blue-600"
                                               : s?.shift 
@@ -2372,7 +2386,7 @@ export default function App() {
                               const stats = emp.shifts
                                 .filter(s => dateRange.some(d => s.date.startsWith(getDateStr(d))))
                                 .reduce((acc, s) => {
-                                  const isWorking = s.shift && s.shift !== "休み" && s.shift !== "有休";
+                                  const isWorking = s.shift && !isOffShift(s.shift);
                                   if (!s.workTime || !s.workTime.includes(":")) {
                                     return { ...acc, attendance: acc.attendance + (isWorking ? 1 : 0), paid: acc.paid + (s.shift === "有休" ? 1 : 0) };
                                   }
@@ -2459,7 +2473,7 @@ export default function App() {
                 ].map(item => <button key={item.key} type="button" onClick={() => goSettings(item.key as typeof settingsPage)} className="group flex min-h-24 items-center gap-4 rounded-2xl border-2 border-slate-100 bg-white p-5 text-left shadow-sm transition hover:border-slate-300 hover:bg-slate-50"><span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-700"><item.icon className="h-6 w-6" /></span><span><strong className="flex items-center gap-2 text-base text-slate-900">{item.title}<ChevronRight className="h-4 w-4 transition group-hover:translate-x-1" /></strong><small className="mt-1 block leading-relaxed text-slate-500">{item.description}</small></span></button>)}</div>
               </motion.div>
             ) : activeTab === "admin" && settingsPage === "worktime" ? (
-              <motion.div key="settings-worktime" className="space-y-4"><SettingsHead title="勤務時間設定" description="シフトで使う勤務時間パターン" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><Card><CardContent className="p-5 sm:p-6"><ToolHelp title="勤務時間設定って何？"><p>シフトの入力で選べる「勤務時間」の候補を登録します。例：9:00〜18:00（早番）。</p><p>追加・変更は、押したその場で自動的に保存されます（保存ボタンはありません）。登録しなくても「休み」「有休」「任意入力」はいつでも選べます。</p><p>夜勤など日をまたぐ勤務は、退勤の時刻を出勤より早く入れると自動で判定されます。</p></ToolHelp><WorkTimeSettings values={workTimes} ready={workTimeReady} loading={workTimeLoading} onPendingChange={setWorkTimePending} confirmed={setupSeen.includes("worktime-confirmed")} onConfirm={() => { markSetupSeen("worktime-confirmed"); toast.success("勤務時間は、このままで使います"); }} onSave={async values => { markSetupSeen("worktime-confirmed"); const master = await saveWorkTimeMaster(values, workTimeRevision); saveWorkTimes(master.items); setWorkTimes(master.items); setWorkTimeRevision(master.revision); toast.success("勤務時間設定を共通保存しました"); }} /></CardContent></Card></motion.div>
+              <motion.div key="settings-worktime" className="space-y-4"><SettingsHead title="勤務時間設定" description="シフトで使う勤務時間パターン" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><Card><CardContent className="p-5 sm:p-6"><ToolHelp title="勤務時間設定って何？"><p>シフトの入力で選べる「勤務時間」の候補を登録します。例：9:00〜18:00（早番）。</p><p>追加・変更は、押したその場で自動的に保存されます（保存ボタンはありません）。登録しなくても「休み」「有休」「代休」「任意入力」はいつでも選べます。お店で使う休みを増やしたいときは、下の「休みの種類」で追加します。</p><p>夜勤など日をまたぐ勤務は、退勤の時刻を出勤より早く入れると自動で判定されます。</p></ToolHelp><WorkTimeSettings values={workTimes} ready={workTimeReady} loading={workTimeLoading} onPendingChange={setWorkTimePending} confirmed={setupSeen.includes("worktime-confirmed")} onConfirm={() => { markSetupSeen("worktime-confirmed"); toast.success("勤務時間は、このままで使います"); }} onSave={async values => { markSetupSeen("worktime-confirmed"); const master = await saveWorkTimeMaster(values, workTimeRevision); saveWorkTimes(master.items); setWorkTimes(master.items); setWorkTimeRevision(master.revision); toast.success("勤務時間設定を共通保存しました"); }} /><OffTypeSettings extra={extraOffTypes} onSave={async types => setExtraOffTypesState(await saveOffTypes(types))} /></CardContent></Card></motion.div>
             ) : activeTab === "admin" && settingsPage === "autodraft" ? (
               <motion.div key="settings-autodraft" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4"><SettingsHead title="シフト案自動作成マスタ" description="シフト案を自動で作る条件" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><ToolHelp title="シフト案の自動作成って何？"><p>勤務パターンを割り当てた人について、先の月のシフト案を自動で作る機能です。勤務パターンを使っていないお店は、OFFのままで大丈夫です。</p><p>「書き足す」なら、すでに入っている勤務は残して空いている日だけ作ります。「上書きする」なら、手で直した勤務も含めて作り直します。確定した期間と、承認ずみの休み・有給希望の日は、どちらでも変わりません。</p></ToolHelp><AutoDraftSettingsView settings={autoDraftSettings} onChange={value => void updateAutoDraftSettings(value)} onStart={() => startAutoDraft()} run={autoDraftRun} rangeLabel={autoDraftRangeLabel} startOptions={autoDraftStartOptions} countValue={autoDraftCount} mode={autoDraftMode} onModeChange={setAutoDraftMode} /></motion.div>
             ) : activeTab === "admin" && settingsPage === "staffing" ? (
@@ -2483,7 +2497,7 @@ export default function App() {
                             {isOpen && <div className="mt-4 border-t pt-4">
                               <div className="mb-4 grid gap-3 sm:grid-cols-[1fr_180px_auto]"><label><span className="mb-1 block text-xs font-bold text-slate-600">勤務パターンの名前（自由に変えられます）</span><Input value={cycleNames[num]} onChange={event => renameCycle(num, event.target.value)} /></label><label><span className="mb-1 block text-xs font-bold text-slate-600">周期</span><select className="h-10 w-full rounded-md border bg-white px-3 text-sm" value={length} onChange={event => setCycleLengths(previous => ({ ...previous, [num]: Number(event.target.value) }))}>{[1,2,3,4].map(value => <option key={value} value={value}>{value}週間</option>)}</select></label></div>
                               <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950"><strong className="block">この型を、いま表示している期間のシフトに入れ直す</strong>{assignedNames.length ? <>この勤務パターンを割り当て済みの人：{assignedNames.join("・")}。押すと、この人たちの「いま表示している期間」のシフトが、この型で作り直されます（手で入れた勤務も上書きされます）。</> : <>まだ誰にも割り当てていません。割り当ては、「シフト作成」→人ごとの画面で、日付を選んで勤務パターンを当てはめます。</>}<Button className="mt-2 w-full" variant="outline" disabled={!assignedNames.length} onClick={() => reapplyCycleToCurrentMonth(num)}>割り当て済みの人の今期を作り直す</Button></div>
-                              <div className="space-y-3 overflow-x-auto">{Array.from({ length }, (_, weekIndex) => { const weekKey = `week${weekIndex + 1}` as "week1" | "week2" | "week3" | "week4"; return <div key={weekKey} className="min-w-[760px]"><strong className="mb-2 block text-xs text-blue-700">第{weekIndex + 1}週</strong><div className="grid grid-cols-7 gap-2">{["日", "月", "火", "水", "木", "金", "土"].map((label, dayIdx) => <label key={label} className="text-center"><span className="mb-1 block text-[10px] font-bold text-slate-500">{label}</span><select className="h-10 w-full rounded-lg border bg-white px-2 text-xs" value={cyclePatterns[num]?.[dayIdx]?.[weekKey] || ""} onChange={event => setCyclePatterns(previous => { const pattern = [...previous[num]]; pattern[dayIdx] = { ...pattern[dayIdx], [weekKey]: event.target.value as ShiftType }; return { ...previous, [num]: pattern }; })}><option value="">なし</option>{[...new Set([...visibleWorkTimes, cyclePatterns[num]?.[dayIdx]?.[weekKey], "有休", "休み"])].filter(Boolean).map(option => <option key={option} value={option}>{displayShift(option, workTimes, "both")}</option>)}</select></label>)}</div></div>; })}</div>
+                              <div className="space-y-3 overflow-x-auto">{Array.from({ length }, (_, weekIndex) => { const weekKey = `week${weekIndex + 1}` as "week1" | "week2" | "week3" | "week4"; return <div key={weekKey} className="min-w-[760px]"><strong className="mb-2 block text-xs text-blue-700">第{weekIndex + 1}週</strong><div className="grid grid-cols-7 gap-2">{["日", "月", "火", "水", "木", "金", "土"].map((label, dayIdx) => <label key={label} className="text-center"><span className="mb-1 block text-[10px] font-bold text-slate-500">{label}</span><select className="h-10 w-full rounded-lg border bg-white px-2 text-xs" value={cyclePatterns[num]?.[dayIdx]?.[weekKey] || ""} onChange={event => setCyclePatterns(previous => { const pattern = [...previous[num]]; pattern[dayIdx] = { ...pattern[dayIdx], [weekKey]: event.target.value as ShiftType }; return { ...previous, [num]: pattern }; })}><option value="">なし</option>{[...new Set([...visibleWorkTimes, cyclePatterns[num]?.[dayIdx]?.[weekKey], ...allOffTypes()])].filter(Boolean).map(option => <option key={option} value={option}>{displayShift(option, workTimes, "both")}</option>)}</select></label>)}</div></div>; })}</div>
                             </div>}
                           </div>;
                         })}</div>
@@ -2577,7 +2591,7 @@ export default function App() {
                 const emp = employees.find(e => e.id === activeTab);
                 if (!emp) return null;
                 const periodShifts = emp.shifts.filter(s => dateRange.some(d => s.date.startsWith(getDateStr(d))));
-                const attendanceDays = periodShifts.filter(s => s.shift && s.shift !== "休み" && s.shift !== "有休").length;
+                const attendanceDays = periodShifts.filter(s => s.shift && !isOffShift(s.shift)).length;
                 const totalWorkHours = periodShifts.reduce((acc, s) => {
                   if (!s.workTime || !s.workTime.includes(":")) return acc;
                   const [h, m] = s.workTime.split(":").map(Number);
@@ -2645,12 +2659,12 @@ export default function App() {
                                             onValueChange={(val) => handleShiftChange(emp.id, dateStr, val as ShiftType | "none")}
                                             disabled={isLocked}
                                           >
-                                            <SelectTrigger className={`h-8 text-xs flex-1 ${s?.shift === "有休" ? "bg-red-100 border-red-300 text-red-800" : "bg-white"} ${isLocked ? "opacity-70 cursor-not-allowed" : ""}`}>
+                                            <SelectTrigger className={`h-8 text-xs flex-1 ${s?.shift === "有休" ? "bg-red-100 border-red-300 text-red-800" : isOffShift(s?.shift) && s?.shift !== "休み" ? "bg-purple-100 border-purple-300 text-purple-800" : "bg-white"} ${isLocked ? "opacity-70 cursor-not-allowed" : ""}`}>
                                               <SelectValue placeholder="選択">{s?.shift ? displayShift(s.shift, workTimes, shiftDisplayMode) : "なし"}</SelectValue>
                                             </SelectTrigger>
                                             <SelectContent className="bg-white border-border shadow-xl z-50">
                                               <SelectItem value="none" className="text-xs text-muted-foreground italic">なし</SelectItem>
-                                              {[...new Set([...visibleWorkTimes, "有休", "休み", "任意入力"])].map(opt => (
+                                              {[...new Set([...visibleWorkTimes, ...allOffTypes(), "任意入力"])].map(opt => (
                                                 <SelectItem key={opt} value={opt} className="text-xs">{displayShift(opt, workTimes, shiftDisplayMode)}</SelectItem>
                                               ))}
                                             </SelectContent>
@@ -2747,7 +2761,7 @@ export default function App() {
                                       <span className="text-slate-700 text-[10px]">{
                                         emp.shifts
                                           .filter(s => dateRange.some(d => s.date.startsWith(getDateStr(d))))
-                                          .filter(s => s.shift && s.shift !== "休み" && s.shift !== "有休")
+                                          .filter(s => s.shift && !isOffShift(s.shift))
                                           .length
                                       }日</span>
                                       {(() => { const paid = emp.shifts                                           .filter(s => dateRange.some(d => s.date.startsWith(getDateStr(d))))                                           .filter(s => s.shift === "有休")                                           .length; return <span className={`${paid > 0 ? "text-red-700" : "text-slate-400"} text-[10px]`}>{paid}日(有)</span>; })()}

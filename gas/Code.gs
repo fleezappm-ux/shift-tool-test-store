@@ -65,6 +65,8 @@ function dispatchShiftAction_(data) {
     if (data.action === "deleteShiftAdminNotice") return deleteShiftAdminNotice(data);
     if (data.action === "getShiftAdminNoticeVisibility") return getShiftAdminNoticeVisibility(data);
     if (data.action === "saveShiftAdminNoticeVisibility") return saveShiftAdminNoticeVisibility(data);
+    if (data.action === "getShiftOffTypes") return getShiftOffTypes(data);
+    if (data.action === "saveShiftOffTypes") return saveShiftOffTypes(data);
     if (data.action === "getShiftWorkTimeMaster") return getShiftWorkTimeMaster(data);
     if (data.action === "saveShiftWorkTimeMaster") return saveShiftWorkTimeMaster(data);
     if (data.action === "getShiftCycleMaster") return getShiftCycleMaster(data);
@@ -2158,7 +2160,7 @@ function runTemplateReset(data) {
     var businessKeys = [
       "SHIFT_CYCLE_MASTER_JSON", "SHIFT_AUTO_DRAFT_SETTINGS_JSON", "SHIFT_SPECIAL_DAY_RULES_JSON", "SHIFT_STAFFING_RULES_JSON",
       "SHIFT_WORK_TIME_MASTER_" + getStoreId(),
-      "SHIFT_CALENDAR_PERIOD_JSON", "SHIFT_PERIOD_STATUSES_JSON", "SHIFT_PAID_LEAVE_BALANCES_JSON",
+      "SHIFT_CALENDAR_PERIOD_JSON", "SHIFT_OFF_TYPES_JSON", "SHIFT_PERIOD_STATUSES_JSON", "SHIFT_PAID_LEAVE_BALANCES_JSON",
       "SHIFT_PAID_LEAVE_LEDGER_JSON", "SHIFT_AUDIT_LOG_JSON", "SHIFT_ERROR_LOG_JSON",
       "SHIFT_BOARD_VISIBILITY_FALLBACK_" + getStoreId(),
       "SHIFT_CORRECTION_VISIBILITY_" + getStoreId(),
@@ -2202,6 +2204,40 @@ function defaultShiftWorkTimeMaster() {
 function readShiftWorkTimeMaster() {
   var raw = shiftProps_().getProperty("SHIFT_WORK_TIME_MASTER_" + getStoreId());
   return raw ? JSON.parse(raw) : defaultShiftWorkTimeMaster();
+}
+/** お店が追加した「休みの種類」（休み・有休・代休のほかに、プルダウンへ足すもの）。 */
+function readShiftOffTypes_() {
+  try {
+    var value = JSON.parse(shiftProps_().getProperty("SHIFT_OFF_TYPES_JSON") || "[]");
+    return Array.isArray(value) ? value.map(function(item) { return sanitizeText(item, 10).trim(); }).filter(function(item) { return item; }).slice(0, 10) : [];
+  } catch (_) { return []; }
+}
+function getShiftOffTypes(data) {
+  try { requireShiftSession(data.sessionToken); return createJsonDataResponse({ success: true, types: readShiftOffTypes_() }); }
+  catch (error) { return createJsonResponse(false, error.message || "休みの種類を取得できませんでした。"); }
+}
+function saveShiftOffTypes(data) {
+  var lock = shiftLockHandle_();
+  try {
+    requireShiftSession(data.sessionToken, "admin");
+    verifyShiftApiKey(data.shiftApiKey);
+    if (!Array.isArray(data.types) || data.types.length > 10) throw new Error("休みの種類は10件まで追加できます。");
+    var reserved = ["有休", "休み", "代休", "任意入力", "未入力", "none"];
+    var seen = {};
+    var types = data.types.map(function(item) {
+      var name = sanitizeText(item, 10).trim();
+      if (!name) throw new Error("名前が空の休みの種類があります。");
+      if (reserved.indexOf(name) >= 0) throw new Error("「" + name + "」は最初から使えるため、追加できません。");
+      if (/[～~:：0-9０-９]/.test(name)) throw new Error("「" + name + "」は、数字や時刻に見える文字を含むため使えません。");
+      if (seen[name]) throw new Error("同じ名前の休みの種類があります。");
+      seen[name] = true;
+      return name;
+    });
+    lock.waitLock(10000);
+    safeSetProperty_("SHIFT_OFF_TYPES_JSON", JSON.stringify(types));
+    return createJsonDataResponse({ success: true, types: types });
+  } catch (error) { return createJsonResponse(false, error.message || "休みの種類を保存できませんでした。"); }
+  finally { if (lock.hasLock()) lock.releaseLock(); }
 }
 function getShiftWorkTimeMaster(data) {
   try { requireShiftSession(data.sessionToken); return createJsonDataResponse({ success: true, master: readShiftWorkTimeMaster() }); }

@@ -2,6 +2,7 @@ import { format } from "date-fns";
 import { Employee, GlobalRemark } from "../types";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { isOffShift } from "../lib/off-types";
 
 interface WorkforceHeatmapProps {
   dates: Date[];
@@ -12,7 +13,7 @@ interface WorkforceHeatmapProps {
 export function WorkforceHeatmap({ dates, employees, remarks }: WorkforceHeatmapProps) {
   const getWorkingCount = (dateStr: string) => employees.filter(employee => {
     const shift = employee.shifts.find(item => item.date.startsWith(dateStr));
-    return Boolean(shift?.shift && shift.shift !== "休み" && shift.shift !== "有休");
+    return Boolean(shift?.shift && !isOffShift(shift.shift));
   }).length;
 
   const colorFor = (count: number) => {

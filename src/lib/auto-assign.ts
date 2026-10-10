@@ -2,6 +2,7 @@ import { addDays, format } from "date-fns";
 import { Employee, LeaveRequest, PersonRule, SpecialDayRule, StaffingRules } from "../types";
 import { findSpecialDayRule } from "./special-day-utils";
 import { isWorkingShift } from "./staffing-check";
+import { isOffShift } from "./off-types";
 import { formatMinutes, parseShiftRange, toMinutes, uncoveredGaps } from "./shift-time";
 import { PersonProfile, ShiftKind, inferProfiles, kindOf, storeMedianStart } from "./shift-profile";
 
@@ -75,7 +76,7 @@ export function buildAutoAssign(input: AssignInput): AssignResult {
     keys.forEach(key => {
       const s = emp.shifts?.find(item => item.date.startsWith(key))?.shift;
       if (isWorkingShift(s)) cells.set(key, "work");
-      else if (s === "有休") { cells.set(key, "fixed-rest"); why.set(key, "有休"); }
+      else if (isOffShift(s) && s !== "休み") { cells.set(key, "fixed-rest"); why.set(key, s as string); }
       else { cells.set(key, "free"); if (!s) empty.add(key); }
     });
     state.set(emp.id, cells); blank.set(emp.id, empty); reasonRest.set(emp.id, why); requestedWork.set(emp.id, new Map());

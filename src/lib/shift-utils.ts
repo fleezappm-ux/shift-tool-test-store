@@ -1,6 +1,7 @@
 
 import { ShiftType } from "../types";
 import { CyclePatterns } from "../constants";
+import { isOffShift } from "./off-types";
 
 /** cyclePatterns（管理画面で編集可能な勤務パターン内容）から、指定した曜日・週の予定シフトを返します。 */
 export function resolveCycleShift(
@@ -92,7 +93,7 @@ export function finalizeShiftText(text: string): string {
  * シフト文字列から拘束時間を計算し、休憩時間と実働時間を返す
  */
 export function calculateTimes(shiftInput: string, customBreak?: string): { breakTime: string; workTime: string } {
-  if (!shiftInput || shiftInput === "有休" || shiftInput === "休み" || shiftInput === "任意入力") {
+  if (!shiftInput || isOffShift(shiftInput) || shiftInput === "任意入力") {
     return { breakTime: "0:00", workTime: "0:00" };
   }
 
