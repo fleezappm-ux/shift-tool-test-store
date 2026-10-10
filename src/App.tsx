@@ -968,7 +968,9 @@ export default function App() {
   const autoDraftStartOptions = Array.from({ length: 25 }, (_, index) => index - 12).map(offset => ({ value: offset, label: `${periodLabelAt(offset)}${offset === 0 ? "（今の期間）" : offset === 1 ? "（次の期間）" : offset < 0 ? "（過去）" : ""}` }));
   const startAutoDraft = async (silent = false) => {
     if (autoDraftRun.state === "running") return;
-    if (!silent && !window.confirm(`${autoDraftRangeLabel}のシフト案を作成します。確定済み・手動編集済みの勤務は上書きしません。開始しますか？`)) return;
+    // 手動で押したときは「上書き」。毎月の自動の作り足し（silent）だけは、これまでどおり既存の勤務を残します。
+    const overwrite = !silent;
+    if (overwrite && !window.confirm(`${autoDraftRangeLabel}のシフト案を、勤務パターンで上書きして作り直します。\n\n・この期間にすでに入っている勤務は、手で直した分も、パターンの内容に置き換わります\n・確定済みの期間は、そのまま残ります\n・承認ずみの休み・有給希望の日は、そのまま残ります\n・勤務パターンを割り当てていない人は、変わりません\n\n1期間の保存に1〜2分かかります。上書きしてよろしいですか？`)) return;
     setAutoDraftRun({ state: "running", message: "シフト案を作成しています…（アプリは閉じないでください）" });
     try {
     const runOffset = silent ? 1 : autoDraftStartOffset;
@@ -991,20 +993,23 @@ export default function App() {
       const length = Math.max(1, Math.min(4, cycleLengths[assignment.cycleType] || 2));
       return ((weeks % length) + length) % length;
     };
+    // 承認ずみの休み・有給希望の日は、上書きしても残す（希望を消さない）。
+    const approvedLeave = new Set(leaveRequests.filter(item => ["承認", "対応済み"].includes(item.status) && ["有給希望", "休み希望", "午前休希望", "午後休希望"].includes(item.type)).flatMap(item => [`${item.employeeId || ""}|${item.date}`, `${item.employeeName}|${item.date}`]));
     const generatedEmployees = employees.map(employee => {
       const assignment = cycleAssignments[employee.id];
       if (!assignment) return employee;
       const shifts = [...employee.shifts];
       allDates.forEach(date => {
         const key = getDateStr(date);
-        if (shifts.some(item => item.date === key)) return;
+        const existingIndex = shifts.findIndex(item => item.date.slice(0, 10) === key);
+        if (existingIndex >= 0 && (!overwrite || approvedLeave.has(`${employee.id}|${key}`) || approvedLeave.has(`${employee.name}|${key}`))) return;
         const weekIndex = cycleWeekIndex(date, assignment);
         let shift = resolveCycleShift(cyclePatterns, assignment.cycleType, date.getDay(), weekIndex);
         if (shouldRestOnDate(date, employee.id, specialDayRules)) shift = "休み";
-        
-        if (!shift) return;
+        if (!shift) { if (existingIndex >= 0) shifts.splice(existingIndex, 1); return; }
         const times = calculateTimes(shift);
-        shifts.push({ date: key, shift, breakTime: times.breakTime, workTime: times.workTime, comment: "" });
+        const next = { date: key, shift, breakTime: times.breakTime, workTime: times.workTime, comment: existingIndex >= 0 ? shifts[existingIndex].comment || "" : "" };
+        if (existingIndex >= 0) shifts[existingIndex] = next; else shifts.push(next);
       });
       return { ...employee, shifts };
     });
@@ -1031,7 +1036,7 @@ export default function App() {
       }
     }
     const recorded = await updateAutoDraftSettings({ ...autoDraftSettings, started: true, lastRunAt: new Date().toISOString() });
-    if (!recorded) { setAutoDraftRun({ state: "error", message: "シフト案は作成しましたが、「開始ずみ」の記録を共通設定に保存できませんでした。もう一度「開始する」を押してください（作成ずみの勤務は上書きされません）", at: new Date().toLocaleString("ja-JP") }); return; }
+    if (!recorded) { setAutoDraftRun({ state: "error", message: "シフト案は作成しましたが、「開始ずみ」の記録を共通設定に保存できませんでした。もう一度「開始する」を押してください", at: new Date().toLocaleString("ja-JP") }); return; }
     const doneMessage = skipped ? `シフト案を作成しました（確定済みの${skipped}期間は変更していません）` : "シフト案を作成しました。「全体」「シフト作成」で確認できます";
     setAutoDraftRun({ state: "done", message: doneMessage, at: new Date().toLocaleString("ja-JP") });
     toast.success(doneMessage);
@@ -2454,7 +2459,7 @@ export default function App() {
             ) : activeTab === "admin" && settingsPage === "worktime" ? (
               <motion.div key="settings-worktime" className="space-y-4"><SettingsHead title="勤務時間設定" description="シフトで使う勤務時間パターン" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><Card><CardContent className="p-5 sm:p-6"><ToolHelp title="勤務時間設定って何？"><p>シフトの入力で選べる「勤務時間」の候補を登録します。例：9:00〜18:00（早番）。</p><p>追加・変更は、押したその場で自動的に保存されます（保存ボタンはありません）。登録しなくても「休み」「有休」「任意入力」はいつでも選べます。</p><p>夜勤など日をまたぐ勤務は、退勤の時刻を出勤より早く入れると自動で判定されます。</p></ToolHelp><WorkTimeSettings values={workTimes} ready={workTimeReady} loading={workTimeLoading} onPendingChange={setWorkTimePending} confirmed={setupSeen.includes("worktime-confirmed")} onConfirm={() => { markSetupSeen("worktime-confirmed"); toast.success("勤務時間は、このままで使います"); }} onSave={async values => { markSetupSeen("worktime-confirmed"); const master = await saveWorkTimeMaster(values, workTimeRevision); saveWorkTimes(master.items); setWorkTimes(master.items); setWorkTimeRevision(master.revision); toast.success("勤務時間設定を共通保存しました"); }} /></CardContent></Card></motion.div>
             ) : activeTab === "admin" && settingsPage === "autodraft" ? (
-              <motion.div key="settings-autodraft" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4"><SettingsHead title="シフト案自動作成マスタ" description="シフト案を自動で作る条件" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><ToolHelp title="シフト案の自動作成って何？"><p>勤務パターンを割り当てた人について、先の月のシフト案を自動で作る機能です。勤務パターンを使っていないお店は、OFFのままで大丈夫です。</p><p>確定したシフトや、手で直した勤務は上書きしません。</p></ToolHelp><AutoDraftSettingsView settings={autoDraftSettings} onChange={value => void updateAutoDraftSettings(value)} onStart={() => startAutoDraft()} run={autoDraftRun} rangeLabel={autoDraftRangeLabel} startOptions={autoDraftStartOptions} countValue={autoDraftCount} /></motion.div>
+              <motion.div key="settings-autodraft" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4"><SettingsHead title="シフト案自動作成マスタ" description="シフト案を自動で作る条件" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><ToolHelp title="シフト案の自動作成って何？"><p>勤務パターンを割り当てた人について、先の月のシフト案を自動で作る機能です。勤務パターンを使っていないお店は、OFFのままで大丈夫です。</p><p>ボタンを押すと、選んだ期間のシフト案を、勤務パターンで上書きして作り直します（手で直した勤務も置き換わります）。確定した期間と、承認ずみの休み・有給希望の日は、そのまま残ります。</p></ToolHelp><AutoDraftSettingsView settings={autoDraftSettings} onChange={value => void updateAutoDraftSettings(value)} onStart={() => startAutoDraft()} run={autoDraftRun} rangeLabel={autoDraftRangeLabel} startOptions={autoDraftStartOptions} countValue={autoDraftCount} /></motion.div>
             ) : activeTab === "admin" && settingsPage === "staffing" ? (
               <motion.div key="settings-staffing" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4"><SettingsHead title="人数・連勤のチェック" description="足りない日や連勤をシフト表で知らせる基準" backLabel="シフトマスタへ戻る" onBack={() => goSettings("shift")} /><ToolHelp title="これは何？"><p>シフトを自動で変える設定ではありません。決めた基準に合わないところを、シフト表で「⚠」と知らせるだけです。</p><p>空欄や「0」の項目はチェックしません。決めたものだけ働きます。</p></ToolHelp><StaffingRulesSettings rules={staffingRules} employees={employeeMaster} roles={roles} saving={staffingSaving} onSave={handleSaveStaffingRules} /></motion.div>
             ) : activeTab === "admin" && settingsPage === "special" ? (
