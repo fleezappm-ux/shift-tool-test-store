@@ -128,6 +128,8 @@ export function HomeView({
         })}
       </div>
 
+      {weekDates.some(date => remarks.some(item => item.date === format(date, "yyyy-MM-dd") && item.color)) && <p className="home-band-note">色のついた日は、日付をタップすると、その日の内容（帯の名前・補足）が下に表示されます。</p>}
+
       <div className="home-desktop-columns"><section className="home-roster">
         <div className="home-roster-header">
           <div className="home-roster-heading"><h2>{selectedDate === today ? "今日のシフト" : "この日のシフト"}</h2><div className="home-roster-count"><Users className="w-4 h-4" /> 出勤 {workingCount}人</div></div>
