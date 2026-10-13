@@ -992,7 +992,8 @@ export default function App() {
   const [aoiFilters, setAoiFilters] = useState<AoiFilterSettings>(() => { try { return { ...DEFAULT_AOI_FILTERS, ...JSON.parse(templateStorage.getItem(AOI_FILTER_KEY) || "{}") }; } catch { return DEFAULT_AOI_FILTERS; } });
   useEffect(() => { try { templateStorage.setItem(AOI_FILTER_KEY, JSON.stringify(aoiFilters)); } catch { /* 保存できなくても動作に影響なし */ } }, [aoiFilters]);
   useEffect(() => { templateStorage.setItem("shift_auto_draft_settings", JSON.stringify(autoDraftSettings)); }, [autoDraftSettings]);
-  useEffect(() => { if (appSession?.role !== "admin") return; fetchAutoDraftSettings().then(value => { if (value) setAutoDraftSettings(value); }).catch(() => undefined); }, [appSession?.role]);
+  const [autoDraftServerLoaded, setAutoDraftServerLoaded] = useState(false);
+  useEffect(() => { if (appSession?.role !== "admin") return; fetchAutoDraftSettings().then(value => { if (value) setAutoDraftSettings(value); setAutoDraftServerLoaded(true); }).catch(() => undefined); }, [appSession?.role]);
 
   const updateAutoDraftSettings = async (value: AutoDraftSettings): Promise<boolean> => { setAutoDraftSettings(value); try { setAutoDraftSettings(await saveAutoDraftSettings(value)); return true; } catch (error) { toast.error(error instanceof Error ? error.message : "自動作成設定を保存できませんでした"); return false; } };
 
@@ -1039,7 +1040,9 @@ export default function App() {
     };
     // 承認ずみの休み・有給希望の日は、上書きしても残す（希望を消さない）。
     const approvedLeave = new Set(leaveRequests.filter(item => ["承認", "対応済み"].includes(item.status) && ["有給希望", "休み希望", "午前休希望", "午後休希望"].includes(item.type)).flatMap(item => [`${item.employeeId || ""}|${item.date}`, `${item.employeeName}|${item.date}`]));
-    const generatedEmployees = employees.map(employee => {
+    // 画面に出ている最新の内容をもとに作る（開いた直後の古い端末内コピーで、サーバーの最新を上書きしないため）
+    const latestEmployees = liveRef.current.employees;
+    const generatedEmployees = latestEmployees.map(employee => {
       const assignment = cycleAssignments[employee.id];
       if (!assignment) return employee;
       const shifts = [...employee.shifts];
@@ -1090,6 +1093,8 @@ export default function App() {
   const autoDraftRunRef = useRef("");
   useEffect(() => {
     if (appSession?.role !== "admin" || !autoDraftSettings.enabled || !autoDraftSettings.started) return;
+    // サーバーのシフトと設定を読み込み終えて、未保存の入力もないときだけ動かす（古い内容を書き戻さないため）
+    if (!initialSyncComplete || !autoDraftServerLoaded || syncState !== "saved") return;
     const actualMonthKey = format(getCurrentShiftMonth(new Date(), calendarPeriodSettings), "yyyy-MM");
     const lastMonth = autoDraftSettings.lastRunAt ? format(new Date(autoDraftSettings.lastRunAt), "yyyy-MM") : "";
     if (lastMonth === actualMonthKey || autoDraftRunRef.current === actualMonthKey) return;
@@ -1097,7 +1102,7 @@ export default function App() {
     void startAutoDraft(true);
     // 月が進んだときに不足する最終月だけを補完します。既存行は上書きしません。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appSession?.role, autoDraftSettings.enabled, autoDraftSettings.started, currentMonthKey]);
+  }, [appSession?.role, autoDraftSettings.enabled, autoDraftSettings.started, currentMonthKey, initialSyncComplete, autoDraftServerLoaded, syncState]);
 
   const handleSaveStaffingRules = async (rules: StaffingRules) => {
     setStaffingSaving(true);
