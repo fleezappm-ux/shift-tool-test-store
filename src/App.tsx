@@ -1229,6 +1229,17 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [employees, globalRemarks, currentMonthKey, syncState, initialSyncComplete, periodStatusLoading, isLocked, appSession?.role]);
 
+  // 保存に失敗したままにならないよう、少し待って自動でやり直します（別の保存が動いていた・電波が一瞬切れた、など）。
+  const saveRetryRef = useRef(0);
+  useEffect(() => {
+    if (syncState === "saved") { saveRetryRef.current = 0; return; }
+    if (syncState !== "offline" || appSession?.role !== "admin" || !initialSyncComplete || periodStatusLoading || isLocked) return;
+    if (saveRetryRef.current >= 6) return;
+    const delay = [3000, 6000, 12000, 20000, 30000, 45000][saveRetryRef.current];
+    const timer = window.setTimeout(() => { saveRetryRef.current += 1; void saveCurrentMonth().catch(() => {}); }, delay);
+    return () => window.clearTimeout(timer);
+  }, [syncState, initialSyncComplete, periodStatusLoading, isLocked, appSession?.role, syncFailure?.count]);
+
   useEffect(() => {
     // 「シフト作成」に入った時は、すぐ入力できるよう編集モードで始めます（閲覧に切り替えることもできます）。
     setOverviewEditing(inCreation && !isLocked);

@@ -65,11 +65,15 @@ export function checkAoi(opts: { dates: Date[]; employees: Employee[]; settings:
       // 月〜土がすべて表示範囲に入っている週だけ数えます（期間の端の半端な週は除く）
       const days = indexes.map(i => dates[i].getDay());
       if (![1, 2, 3, 4, 5, 6].every(d => days.includes(d))) return;
+      const openDays = indexes.filter(i => dates[i].getDay() !== 0 && !isClosed(dates[i])).length;
+      if (openDays === 0) return;
       const target = employees.filter(emp => AOI_WEEKLY_PEOPLE.some(name => (emp.displayName || emp.name || "").includes(name)));
       target.forEach(emp => {
         const worked = indexes.filter(i => countsAsWork(shiftOf(emp, keys[i]))).length;
-        if (worked >= AOI_WEEKLY_DAYS) return;
-        const message = `${emp.displayName || emp.name}さん ${label(dates[indexes[0]])}の週は出勤${worked}日（${AOI_WEEKLY_DAYS}日必要・有休は出勤に数えます）`;
+        // 祝日などで、お店が開く日が5日に満たない週は、開く日の数まで（例：木金土だけなら3日）
+        const need = Math.min(AOI_WEEKLY_DAYS, openDays);
+        if (worked >= need) return;
+        const message = `${emp.displayName || emp.name}さん ${label(dates[indexes[0]])}の週は出勤${worked}日（${need}日必要・有休は出勤に数えます）`;
         out.weekMessages.push(message);
         indexes.forEach((i, n) => { out.cells[`${emp.id}|${keys[i]}`] = { first: n === 0, last: n === indexes.length - 1, message }; });
       });

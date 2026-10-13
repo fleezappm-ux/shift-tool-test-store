@@ -9,4 +9,8 @@ const assert=(c:boolean,m:string)=>{console.log((c?"PASS: ":"FAIL: ")+m);if(!c)p
 assert(r.weekMessages.length===1&&r.weekMessages[0].includes("降旗"),"aoi: 祝日の週に4日だけの降旗さんは赤枠");
 assert(!r.weekMessages.some(m=>m.includes("藤川")||m.includes("本道")),"aoi: 5日出勤・有休込み5日は赤枠にしない");
 assert(!r.weekMessages.some(m=>m.includes("金井")),"aoi: 対象外の人は見ない");
+const hol3=["2026-09-21","2026-09-22","2026-09-23","2026-09-24","2026-09-25","2026-09-26","2026-09-27"].map(d);
+const mk3=(id:string,name:string,w:string[])=>({id,name,displayName:name,shifts:hol3.map(x=>{const key=`${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}-${String(x.getDate()).padStart(2,"0")}`;return {date:key,shift:w.includes(key)?"9:00":"休み"}})}) as any;
+const r3=checkAoi({dates:hol3,employees:[mk3("1","降旗",["2026-09-24","2026-09-25","2026-09-26"]),mk3("2","藤川",["2026-09-25","2026-09-26"])],settings:{weekly:true,daily:false},bandOf:()=>"",isClosed:x=>x.getDay()===0||[21,22,23].includes(x.getDate())});
+assert(r3.weekMessages.length===1&&r3.weekMessages[0].includes("藤川")&&r3.weekMessages[0].includes("3日必要"),"aoi: 祝日が3日ある週は、開く日（木金土の3日）出勤すれば赤枠にしない");
 assert(r.rowMessages.length===1&&r.rowMessages[0].includes("11/7"),"aoi: 休診日は2人以上、足りない日だけ赤枠（祝日・日曜は見ない）");
