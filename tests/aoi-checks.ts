@@ -1,0 +1,12 @@
+import { checkAoi, DEFAULT_AOI_FILTERS } from ../src/lib/aoi-checks;
+const d=(s:string)=>new Date(s+"T00:00:00");
+const dates=["2026-11-02","2026-11-03","2026-11-04","2026-11-05","2026-11-06","2026-11-07","2026-11-08"].map(d);
+const mk=(id:string,name:string,work:string[],extra:Record<string,string>={})=>({id,name,displayName:name,shifts:dates.map(x=>{const k=x.toISOString().slice(0,10).replace(/T.*/,"");const key=`${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}-${String(x.getDate()).padStart(2,"0")}`;return {date:key,shift:extra[key]||(work.includes(key)?"9:00":"休み")}})}) as any;
+const W=["2026-11-02","2026-11-04","2026-11-05","2026-11-06"];
+const emps=[mk("1","降旗",W),mk("2","藤川",[...W,"2026-11-07"]),mk("3","本道",W,{"2026-11-07":"有休"}),mk("4","金井",W)];
+const r=checkAoi({dates,employees:emps,settings:DEFAULT_AOI_FILTERS,bandOf:x=>x.getDate()===7?"谷川整形休診":"",isClosed:x=>x.getDay()===0||x.getDate()===3});
+const assert=(c:boolean,m:string)=>{console.log((c?"PASS: ":"FAIL: ")+m);if(!c)process.exit(1)};
+assert(r.weekMessages.length===1&&r.weekMessages[0].includes("降旗"),"aoi: 祝日の週に4日だけの降旗さんは赤枠");
+assert(!r.weekMessages.some(m=>m.includes("藤川")||m.includes("本道")),"aoi: 5日出勤・有休込み5日は赤枠にしない");
+assert(!r.weekMessages.some(m=>m.includes("金井")),"aoi: 対象外の人は見ない");
+assert(r.rowMessages.length===1&&r.rowMessages[0].includes("11/7"),"aoi: 休診日は2人以上、足りない日だけ赤枠（祝日・日曜は見ない）");

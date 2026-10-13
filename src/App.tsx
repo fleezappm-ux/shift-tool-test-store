@@ -31,7 +31,7 @@ import {
   Palette,
   Clock,
   SlidersHorizontal
-  ,MessageSquareText, UserRound
+  ,MessageSquareText, UserRound, ShieldCheck
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { toast } from "sonner";
@@ -74,6 +74,8 @@ import { SpecialDaySettings } from "./components/SpecialDaySettings";
 import { fetchSpecialDayRules, saveSpecialDayRules } from "./lib/special-day-sync";
 import { fetchStaffingRules, saveStaffingRules, EMPTY_STAFFING_RULES } from "./lib/staffing-sync";
 import { checkStaffing, hasAnyStaffingRule } from "./lib/staffing-check";
+import { AOI_FILTER_KEY, AoiFilterSettings, DEFAULT_AOI_FILTERS, checkAoi, isAoiStore } from "./lib/aoi-checks";
+import { findSpecialDayRule } from "./lib/special-day-utils";
 import { StaffingRulesSettings } from "./components/StaffingRulesSettings";
 import { AutoPlan } from "./components/AutoAssignDialog";
 import { ShiftWizard } from "./components/ShiftWizard";
@@ -154,7 +156,7 @@ export default function App() {
   const [guideOpen, setGuideOpen] = useState(false);
   const [guideSection, setGuideSection] = useState<EmployeeGuideSection>("home");
   const openGuide = (section: EmployeeGuideSection) => { setGuideSection(section); setGuideOpen(true); };
-  const [settingsPage, setSettingsPage] = useState<"menu" | "store" | "board" | "employee" | "shift" | "worktime" | "special" | "staffing" | "operations" | "autodraft" | "other" | "reset">(() => templateStorage.getItem(RESET_PENDING_KEY) ? "reset" : "menu");
+  const [settingsPage, setSettingsPage] = useState<"menu" | "store" | "board" | "employee" | "shift" | "worktime" | "special" | "staffing" | "operations" | "autodraft" | "aoi" | "other" | "reset">(() => templateStorage.getItem(RESET_PENDING_KEY) ? "reset" : "menu");
   const [workTimes, setWorkTimes] = useState(readWorkTimes);
   const [workTimeReady, setWorkTimeReady] = useState(false);
   const [workTimeLoading, setWorkTimeLoading] = useState(true);
@@ -987,6 +989,8 @@ export default function App() {
     fetchPaidLeaveBalance(appSession.employeeId).then(setPaidLeaveBalance).catch(error => console.error("有休情報の取得に失敗しました", error));
   }, [appSession?.employeeId]);
 
+  const [aoiFilters, setAoiFilters] = useState<AoiFilterSettings>(() => { try { return { ...DEFAULT_AOI_FILTERS, ...JSON.parse(templateStorage.getItem(AOI_FILTER_KEY) || "{}") }; } catch { return DEFAULT_AOI_FILTERS; } });
+  useEffect(() => { try { templateStorage.setItem(AOI_FILTER_KEY, JSON.stringify(aoiFilters)); } catch { /* 保存できなくても動作に影響なし */ } }, [aoiFilters]);
   useEffect(() => { templateStorage.setItem("shift_auto_draft_settings", JSON.stringify(autoDraftSettings)); }, [autoDraftSettings]);
   useEffect(() => { if (appSession?.role !== "admin") return; fetchAutoDraftSettings().then(value => { if (value) setAutoDraftSettings(value); }).catch(() => undefined); }, [appSession?.role]);
 
@@ -2040,6 +2044,10 @@ export default function App() {
     }
   };
 
+  const aoiStore = isAoiStore(storeMaster.storeName) && appSession?.role === "admin";
+  const aoiChecks = aoiStore && (aoiFilters.weekly || aoiFilters.daily)
+    ? checkAoi({ dates: dateRange, employees: dashboardEmployees, settings: aoiFilters, bandOf: date => remarkForDate(date)?.type || "", isClosed: date => { const rule = findSpecialDayRule(date, specialDayRules); return !!rule && (rule.id === "band-v3:holiday" || rule.restMode === "all"); } })
+    : null;
   const getGlobalRemark = (date: Date) => remarkForDate(date);
 
   const getRowBgClass = (date: Date) => {
@@ -2340,6 +2348,12 @@ export default function App() {
                 <Card className={`dashboard-card border-border shadow-none ${isFromAdmin ? "creation-card" : ""} md:h-full md:min-h-0 md:flex md:flex-col ${dashboardListView ? "dashboard-list-view" : ""}`}>
                   <CardHeader className={`dashboard-card-header dashboard-blue-header page-blue-header border-b border-border ${isLocked ? "is-final" : "is-draft"}`}>
                     {isFromAdmin && <div className="creation-head">
+                      {aoiStore && <div className="aoi-filter-bar" data-aoi-filter-bar>
+                        <span>赤枠チェック</span>
+                        <button type="button" aria-pressed={aoiFilters.weekly} className={aoiFilters.weekly ? "is-on" : ""} onClick={() => setAoiFilters(current => ({ ...current, weekly: !current.weekly }))}>フィルタ1（人・週5日）{aoiFilters.weekly ? "ON" : "OFF"}</button>
+                        <button type="button" aria-pressed={aoiFilters.daily} className={aoiFilters.daily ? "is-on" : ""} onClick={() => setAoiFilters(current => ({ ...current, daily: !current.daily }))}>フィルタ2（日・人数）{aoiFilters.daily ? "ON" : "OFF"}</button>
+                        {aoiChecks && (aoiChecks.weekMessages.length + aoiChecks.rowMessages.length) > 0 && <details className="aoi-filter-list"><summary>赤枠 {aoiChecks.weekMessages.length + aoiChecks.rowMessages.length}件</summary><ul>{[...aoiChecks.weekMessages, ...aoiChecks.rowMessages].map((line, index) => <li key={index}>{line}</li>)}</ul></details>}
+                      </div>}
                       <div className="creation-head-row">
                         <div className="creation-head-title">
                           <img src={`${import.meta.env.BASE_URL}icon-192.png`} alt="" />
@@ -2504,7 +2518,7 @@ export default function App() {
 
                             return (
                               <Fragment key={date.toISOString()}>
-                              <TableRow className={`h-10 ${rowBgClass}`}>
+                              <TableRow className={`h-10 ${rowBgClass} ${aoiChecks?.rows[dateStr] ? "aoi-row-red" : ""}`} title={aoiChecks?.rows[dateStr]}>
                                 <TableCell className="dashboard-date-col py-2 border-r border-border">{appSession.role === "admin" && (!isLocked || dayNotesOn) ? <button type="button" className="block w-full text-inherit" aria-label={`${format(date, "M月d日")}の備考・帯を設定`} onClick={() => { setDayLabelInput(""); setDayNoteInput(activeDayNotes[dateStr] || ""); setDayLabelDialog(dateStr); }}>{format(date, "MM/dd")}{gr?.type && <span className="block truncate text-[8px] font-bold leading-tight text-slate-600">{gr.type}</span>}{staffingWarnings?.byDate[dateStr] && <span data-staffing-date className="block text-[9px] font-bold text-amber-700">⚠</span>}</button> : <>{format(date, "MM/dd")}{gr?.type && <span className="block truncate text-[8px] font-bold leading-tight text-slate-600">{gr.type}</span>}</>}</TableCell>
                                 <TableCell className="dashboard-day-col py-2 text-muted-foreground border-r border-border">{format(date, "E", { locale: ja })}</TableCell>
                                 {dashboardEmployees.map(emp => {
@@ -2514,7 +2528,7 @@ export default function App() {
                                   const shiftText = displayShift(actualShiftText, workTimes, shiftDisplayMode);
                                   const compactParts = shiftText.includes("～") ? shiftText.split("～") : [shiftText];
                                   return (
-                                    <TableCell key={emp.id} className={`dashboard-employee-cell py-1 px-1 border-r border-border ${leaveRequest ? "has-leave-request" : ""} ${leaveRequest?.status === "申請中" && leaveRequest.type !== "希望なし" ? "is-pending-request" : ""} ${appSession.role === "admin" && staffingWarnings?.byCell[`${emp.id}|${dateStr}`] ? "ring-2 ring-inset ring-amber-400" : ""}`} data-staffing-cell={appSession.role === "admin" ? staffingWarnings?.byCell[`${emp.id}|${dateStr}`]?.join("／") : undefined} title={`${staffingWarnings?.byCell[`${emp.id}|${dateStr}`] && appSession.role === "admin" ? `⚠ ${staffingWarnings.byCell[`${emp.id}|${dateStr}`].join("／")}　` : ""}${actualShiftText}${leaveRequest ? `・${leaveRequest.type}${leaveRequest.desiredWorkStart && leaveRequest.desiredWorkEnd ? ` ${leaveRequest.desiredWorkStart}〜${leaveRequest.desiredWorkEnd}` : ""}（${leaveRequest.status}）` : ""}`}>
+                                    <TableCell key={emp.id} className={`dashboard-employee-cell py-1 px-1 border-r border-border ${leaveRequest ? "has-leave-request" : ""} ${leaveRequest?.status === "申請中" && leaveRequest.type !== "希望なし" ? "is-pending-request" : ""} ${appSession.role === "admin" && staffingWarnings?.byCell[`${emp.id}|${dateStr}`] ? "ring-2 ring-inset ring-amber-400" : ""} ${aoiChecks?.cells[`${emp.id}|${dateStr}`] ? `aoi-wk-red ${aoiChecks.cells[`${emp.id}|${dateStr}`].first ? "aoi-wk-first" : ""} ${aoiChecks.cells[`${emp.id}|${dateStr}`].last ? "aoi-wk-last" : ""}` : ""}`} data-staffing-cell={appSession.role === "admin" ? staffingWarnings?.byCell[`${emp.id}|${dateStr}`]?.join("／") : undefined} title={`${staffingWarnings?.byCell[`${emp.id}|${dateStr}`] && appSession.role === "admin" ? `⚠ ${staffingWarnings.byCell[`${emp.id}|${dateStr}`].join("／")}　` : ""}${actualShiftText}${leaveRequest ? `・${leaveRequest.type}${leaveRequest.desiredWorkStart && leaveRequest.desiredWorkEnd ? ` ${leaveRequest.desiredWorkStart}〜${leaveRequest.desiredWorkEnd}` : ""}（${leaveRequest.status}）` : ""}`}>
                                       <button type="button" disabled={!isFromAdmin || periodStatusLoading || appSession.role !== "admin" || ((!overviewEditing || isLocked) && !(leaveRequest?.status === "申請中" && leaveRequest.type !== "希望なし"))} onClick={() => openOverviewCell(emp, dateStr)} aria-label={`${emp.displayName || emp.name} ${format(date, "M月d日")} ${actualShiftText || (s?.shift === "休み" ? "休み" : "なし")}の勤務を変更`} className={`w-full min-h-9 text-[12px] py-1.5 rounded-sm disabled:cursor-default enabled:cursor-pointer enabled:ring-1 enabled:ring-amber-500 enabled:bg-amber-50 enabled:hover:bg-amber-100 enabled:focus-visible:outline-2 enabled:focus-visible:outline-amber-600 text-center font-bold leading-none ${
                                         s?.shift === "有休" 
                                           ? "bg-red-100 text-red-800 border border-red-200" 
@@ -2600,6 +2614,7 @@ export default function App() {
                       <div className="mt-3 grid gap-2">{setupSteps.map((step, index) => <button key={step.title} type="button" onClick={step.onClick} className={`flex items-center gap-3 rounded-xl border bg-white px-3 py-2.5 text-left ${step.done ? "border-emerald-200" : "border-amber-200"}`}><span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-black ${step.done ? "bg-emerald-500 text-white" : "bg-amber-200 text-amber-900"}`}>{step.done ? "✓" : index + 1}</span><span className="min-w-0"><strong className={`block text-sm ${step.done ? "text-slate-400 line-through" : "text-slate-900"}`}>{step.title}</strong><small className="block text-xs text-slate-500">{step.hint}</small></span><ChevronRight className="ml-auto h-4 w-4 shrink-0 text-slate-400" /></button>)}</div>
                     </div>}
                     {[
+                      ...(isAoiStore(storeMaster.storeName) ? [{ key: "aoi", icon: ShieldCheck, title: "あおい薬局マスタ", description: "自動シフト作成・赤枠チェック（フィルタ）のON/OFF" }] : []),
                       { key: "store", icon: Building2, title: "店舗マスタ", description: "店舗名・月の区切り・お休みの日" },
                       { key: "board", icon: MessageSquareText, title: "お知らせ掲示板設定", description: "お知らせ・希望の公開範囲" },
                       { key: "employee", icon: Users, title: "従業員マスタ", description: "従業員・役職・ホーム表示" },
@@ -2616,6 +2631,16 @@ export default function App() {
               </motion.div>
             ) : activeTab === "admin" && settingsPage === "reset" ? (
               <TemplateResetSettings onBack={() => goSettings("menu")} onProgress={setResetProgress} />
+            ) : activeTab === "admin" && settingsPage === "aoi" && isAoiStore(storeMaster.storeName) ? (
+              <motion.div key="settings-aoi" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+                <SettingsHead title="あおい薬局マスタ" description="あおい薬局だけの設定" backLabel="設定へ戻る" onBack={() => goSettings("menu")} />
+                <Card><CardContent className="space-y-4 p-6">
+                  <div className="rounded-xl border-2 border-slate-200 p-4"><div className="flex items-center justify-between gap-3"><div><strong>自動シフト作成</strong><p className="mt-1 text-xs leading-6 text-slate-600">勤務パターンからシフト案を自動で作ります（今までの機能のままです）。</p></div><button type="button" aria-pressed={autoDraftSettings.enabled} className={`aoi-switch ${autoDraftSettings.enabled ? "is-on" : ""}`} onClick={() => void updateAutoDraftSettings({ ...autoDraftSettings, enabled: !autoDraftSettings.enabled })}>{autoDraftSettings.enabled ? "ON" : "OFF"}</button></div><Button type="button" variant="outline" className="mt-3 h-11 w-full font-bold" onClick={() => goSettings("autodraft")}>自動作成の細かい設定を開く</Button></div>
+                  <div className="rounded-xl border-2 border-slate-200 p-4"><div className="flex items-center justify-between gap-3"><div><strong>フィルタ1（人・週の出勤）</strong><p className="mt-1 text-xs leading-6 text-slate-600">降旗・藤川・本道が、月〜土の1週間で出勤5日に足りないとき、その週を赤枠で囲みます。有休は出勤に数えます。祝日の週もゆるくなりません（祝日の週は営業日が5日なので、全員出勤か有休が必要です）。</p></div><button type="button" aria-pressed={aoiFilters.weekly} className={`aoi-switch ${aoiFilters.weekly ? "is-on" : ""}`} onClick={() => setAoiFilters(current => ({ ...current, weekly: !current.weekly }))}>{aoiFilters.weekly ? "ON" : "OFF"}</button></div></div>
+                  <div className="rounded-xl border-2 border-slate-200 p-4"><div className="flex items-center justify-between gap-3"><div><strong>フィルタ2（日・出勤人数）</strong><p className="mt-1 text-xs leading-6 text-slate-600">月・火・水・金は4人以上、木・土は3人以上。谷川整形が休診の日は2人以上。足りない日を赤枠で囲みます（日曜・祝日・全員お休みの日は見ません）。</p></div><button type="button" aria-pressed={aoiFilters.daily} className={`aoi-switch ${aoiFilters.daily ? "is-on" : ""}`} onClick={() => setAoiFilters(current => ({ ...current, daily: !current.daily }))}>{aoiFilters.daily ? "ON" : "OFF"}</button></div></div>
+                  <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800">✓ フィルタのON/OFFは、この端末に自動で保存されます。「シフト作成」画面の「シフトを確定」の上のボタンでも切り替えられます。</p>
+                </CardContent></Card>
+              </motion.div>
             ) : activeTab === "admin" && settingsPage === "store" ? (
               <motion.div key="settings-store" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
                 <SettingsHead title="店舗マスタ" description="店舗全体の基本ルール" backLabel="設定へ戻る" onBack={() => goSettings("menu")} /><Card><CardContent className="p-6 space-y-5"><StoreMasterSettings master={storeMaster} onMasterChange={setStoreMaster} period={calendarPeriodSettings} periodDraft={calendarPeriodDraft} saving={calendarPeriodSaving} onPeriodDraftChange={setCalendarPeriodDraft} onSavePeriod={handleSaveCalendarPeriod} onSaveStore={async settings => { const saved = await saveStoreSettings(settings); markSetupSeen("store-saved"); setStoreMaster(current => { const next = { ...current, ...saved }; templateStorage.setItem("store_master_settings", JSON.stringify(next)); return next; }); }} onOpenBandSettings={() => goSettings("special")} /><BusinessHoursSettings rules={staffingRules} roles={roles} saving={staffingSaving} onSave={handleSaveStaffingRules} /></CardContent></Card>
