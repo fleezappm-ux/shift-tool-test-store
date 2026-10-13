@@ -8,7 +8,7 @@ const ctx={console,Utilities:{getUuid:()=>'u'+Math.random().toString(36).slice(2
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('gas/Code.gs','utf8'),ctx);
 const book=makeFakeSpreadsheet();installSpreadsheetApp(ctx,book);
 Object.assign(ctx,{verifyShiftApiKey(){},createJsonDataResponse:x=>x,createJsonResponse:(success,message)=>({success,message}),appendShiftAudit(){},
- shiftLockHandle_:()=>({tryLock:()=>true,releaseLock(){}})});
+ shiftLockHandle_:()=>({tryLock:()=>true,waitLock(){},releaseLock(){}})});
 const row=(d,c,id='e1',name='藤川')=>({'従業員ID':id,'社員名':name,'日付':d,'シフト内容':c,'休憩時間':'1:00','実働時間':'8:00','備考':'','全体補足種別':'','全体補足内容':''});
 const base={shiftApiKey:'x',updatedBy:'管理者',periodStart:'2026-10-01',periodEnd:'2026-10-31'};
 const sheet=()=>book.sheets['シフト'];
@@ -115,5 +115,18 @@ console.log('PASS: sheet storage (create, read, diff-only writes, delete, valida
   // IDの無い古い行は、名前で同じ人として引き継ぐ
   sheet().data.push(['2026-12-04','古田','','早番','1:00','8:00','','','','管理者','2026-10-09 00:00:00']);
   r=ctx.saveShiftMonth({...b2,shifts:[row('2026-12-04','遅番','idC','古田')]});assert.equal(r.updated,1);assert.equal(r.created,0);
+}
+// 3c. 日ごとの備考（保存・消去・長さ制限・古い日付の整理・店舗設定のON/OFF）
+{
+  let n=ctx.saveShiftDayNote({date:'2026-10-20',text:'棚卸のため、全員18時まで残ってください'});
+  assert.equal(n.success,true);assert.equal(n.notes['2026-10-20'],'棚卸のため、全員18時まで残ってください');
+  assert.equal(ctx.saveShiftDayNote({date:'2026-10-21',text:'あ'.repeat(61)}).success,false);n=ctx.saveShiftDayNote({date:'2026-10-21',text:'あ'.repeat(60)});assert.equal(n.notes['2026-10-21'].length,60);
+  n=ctx.saveShiftDayNote({date:'2026-10-20',text:'  '});assert.equal(n.notes['2026-10-20'],undefined);assert.equal(Object.keys(n.notes).length,1);
+  assert.equal(ctx.saveShiftDayNote({date:'bad',text:'x'}).success,false);
+  ctx.saveShiftDayNote({date:'2001-01-01',text:'古い'});assert.equal(ctx.getShiftDayNotes({}).notes['2001-01-01'],undefined);
+  ctx.requireShiftSession=()=>({});assert.equal(ctx.getShiftStoreSettings({}).settings.showDayNotes,false);
+  const st=ctx.saveShiftStoreSettings({sessionToken:'x',settings:{storeName:'あおい薬局',showStoreNameOnHome:true,showDayNotes:true}});
+  assert.equal(st.settings.showDayNotes,true);assert.equal(ctx.readShiftStoreSettings_().showDayNotes,true);
+  ctx.saveShiftStoreSettings({sessionToken:'x',settings:{storeName:'あおい薬局',showStoreNameOnHome:true}});assert.equal(ctx.readShiftStoreSettings_().showDayNotes,false);
 }
 console.log('PASS: settings sheet (secrets stay private, 300 staff, 500 requests, migration from old storage)');

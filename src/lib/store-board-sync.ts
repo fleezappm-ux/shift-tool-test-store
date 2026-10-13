@@ -39,12 +39,22 @@ export async function saveCorrectionVisibility(visibility: "all" | "private"): P
   return json.visibility === "all" ? "all" : "private";
 }
 
-export interface SharedStoreSettings { storeName: string; showStoreNameOnHome: boolean }
+export interface SharedStoreSettings { storeName: string; showStoreNameOnHome: boolean; showDayNotes: boolean }
 export async function fetchStoreSettings(): Promise<SharedStoreSettings> {
   const json = await call("getShiftStoreSettings");
-  return { storeName: String(json.settings?.storeName || ""), showStoreNameOnHome: json.settings?.showStoreNameOnHome === true };
+  return { storeName: String(json.settings?.storeName || ""), showStoreNameOnHome: json.settings?.showStoreNameOnHome === true, showDayNotes: json.settings?.showDayNotes === true };
 }
 export async function saveStoreSettings(settings: SharedStoreSettings): Promise<SharedStoreSettings> {
   const json = await call("saveShiftStoreSettings", { settings });
-  return { storeName: String(json.settings?.storeName || ""), showStoreNameOnHome: json.settings?.showStoreNameOnHome === true };
+  return { storeName: String(json.settings?.storeName || ""), showStoreNameOnHome: json.settings?.showStoreNameOnHome === true, showDayNotes: json.settings?.showDayNotes === true };
 }
+
+/** 日ごとの備考。{ "yyyy-MM-dd": 文字 }。入力は管理者だけです。 */
+export type DayNotes = Record<string, string>;
+function cleanDayNotes(value: unknown): DayNotes {
+  const out: DayNotes = {};
+  if (value && typeof value === "object") Object.entries(value as Record<string, unknown>).forEach(([date, text]) => { if (/^\d{4}-\d{2}-\d{2}$/.test(date) && typeof text === "string" && text.trim()) out[date] = text; });
+  return out;
+}
+export async function fetchDayNotes(): Promise<DayNotes> { return cleanDayNotes((await call("getShiftDayNotes")).notes); }
+export async function saveDayNote(date: string, text: string): Promise<DayNotes> { return cleanDayNotes((await call("saveShiftDayNote", { date, text })).notes); }

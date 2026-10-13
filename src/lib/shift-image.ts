@@ -3,6 +3,7 @@ export interface ShiftImageRow {
   weekday: string;    // 例: 金
   holiday: boolean;   // 日曜・祝日などで日付を赤にする
   remark: string;     // 帯の名前（なければ空）
+  note?: string;      // 日ごとの備考（管理者が入力した連絡事項）
   color?: string;     // 帯の色（red/blue/green/amber/purple/gray。画面の帯と同じ）
   cells: string[];    // 従業員ごとの勤務。例: "9:00～18:00" / "休み" / "午前有休 13:00～18:00"
 }
@@ -12,10 +13,13 @@ export interface ShiftImageInput {
   subtitle: string;
   employees: string[];
   rows: ShiftImageRow[];
+  noteColumn?: boolean; // true: 右端に「備考」の列を付け、帯の名前と備考をまとめて出す
 }
 
 const BAND_COLORS: Record<string, string> = { red: "#fee2e2", blue: "#dbeafe", green: "#dcfce7", amber: "#fef3c7", purple: "#f3e8ff", gray: "#f1f5f9" };
 const WIDTH = 1080; // スマホで拡大せずに読める幅
+const WIDTH_WITH_NOTE = 1360; // 備考の列があるときは、名前の列が狭くならないよう広げる
+const NOTE_COL = 330;
 const FONT = '"Hiragino Sans","Noto Sans JP","Yu Gothic",sans-serif';
 
 /** 勤務の文字を「上段・下段」に分けます（時間は2行、それ以外は1行）。 */
@@ -35,9 +39,11 @@ export function splitShiftText(text: string): { head: string; lines: string[]; t
 
 export async function renderShiftImage(input: ShiftImageInput): Promise<Blob> {
   const count = Math.max(1, input.employees.length);
+  const withNote = input.noteColumn === true;
   const dateCol = 190;
-  const colW = Math.floor((WIDTH - dateCol) / count);
-  const width = dateCol + colW * count;
+  const noteW = withNote ? NOTE_COL : 0;
+  const colW = Math.floor(((withNote ? WIDTH_WITH_NOTE : WIDTH) - dateCol - noteW) / count);
+  const width = dateCol + colW * count + noteW;
   const titleH = 96;
   const headH = 64;
   const footH = 28;
@@ -87,6 +93,7 @@ export async function renderShiftImage(input: ShiftImageInput): Promise<Blob> {
   ctx.fillRect(0, y, width, headH);
   center("日付", dateCol / 2, y + headH / 2, 24, "#1c2733", "700", dateCol - 10);
   input.employees.forEach((name, index) => center(name, dateCol + colW * index + colW / 2, y + headH / 2, nameSize, "#1c2733"));
+  if (withNote) center("備考", dateCol + colW * count + noteW / 2, y + headH / 2, 24, "#1c2733", "700", noteW - 10);
   y += headH;
 
   const oneLine = compact && colW >= 150;
@@ -95,7 +102,7 @@ export async function renderShiftImage(input: ShiftImageInput): Promise<Blob> {
     if (band) { ctx.fillStyle = band; ctx.fillRect(0, y, width, rowH); }
     const dateColor = row.holiday ? "#c62828" : row.weekday === "土" ? "#1f4e6b" : "#1c2733";
     const dateSize = compact ? 26 : 30;
-    if (row.remark) {
+    if (row.remark && !withNote) {
       center(`${row.label}（${row.weekday}）`, dateCol / 2, y + rowH * 0.36, dateSize, dateColor, "700", dateCol - 10);
       center(row.remark, dateCol / 2, y + rowH * 0.74, compact ? 17 : 20, "#56636f", "500", dateCol - 10);
     } else center(`${row.label}（${row.weekday}）`, dateCol / 2, y + rowH / 2, dateSize, dateColor, "700", dateCol - 10);
@@ -123,6 +130,28 @@ export async function renderShiftImage(input: ShiftImageInput): Promise<Blob> {
       if (half) center(part.head, cx, y + (compact ? 14 : 24), compact ? 15 : 20, "#9a5a00", "800");
       text.forEach((line, i) => center(line, cx, startY + i * gap, size, "#1c2733", "700"));
     });
+    if (withNote) {
+      const text = [row.remark, row.note].filter(Boolean).join("　");
+      if (text) {
+        const size = compact ? 19 : 22;
+        const lineH = size + 5;
+        const maxLines = Math.max(1, Math.floor((rowH - 8) / lineH));
+        ctx.font = `600 ${size}px ${FONT}`;
+        const wrapped: string[] = [];
+        let line = "";
+        for (const ch of Array.from(text)) {
+          if (ctx.measureText(line + ch).width > noteW - 22 && line) { wrapped.push(line); line = ch; } else line += ch;
+        }
+        if (line) wrapped.push(line);
+        const shown = wrapped.slice(0, maxLines);
+        if (wrapped.length > maxLines) shown[maxLines - 1] = shown[maxLines - 1].slice(0, -1) + "…";
+        ctx.fillStyle = "#1c2733";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        const top = y + rowH / 2 - ((shown.length - 1) * lineH) / 2;
+        shown.forEach((value, i) => ctx.fillText(value, dateCol + colW * count + 10, top + i * lineH));
+      }
+    }
     y += rowH;
     ctx.fillStyle = "#e3e8ec";
     ctx.fillRect(0, y - 1, width, 1);
@@ -130,6 +159,7 @@ export async function renderShiftImage(input: ShiftImageInput): Promise<Blob> {
   ctx.fillStyle = "#e3e8ec";
   for (let i = 0; i < count; i += 1) ctx.fillRect(dateCol + colW * i - 1, titleH, 1, height - titleH - footH);
   ctx.fillRect(dateCol - 1, titleH, 1, height - titleH - footH);
+  if (withNote) ctx.fillRect(dateCol + colW * count - 1, titleH, 1, height - titleH - footH);
   ctx.fillStyle = "#7a8791";
   ctx.font = `500 16px ${FONT}`;
   ctx.textAlign = "right";

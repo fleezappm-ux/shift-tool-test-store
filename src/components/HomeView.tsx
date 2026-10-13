@@ -136,7 +136,7 @@ export function HomeView({
           <p className="home-roster-date">{format(selectedDateObject, "M月d日")}（{WEEKDAYS[selectedDateObject.getDay()]}）</p>
           <span className="home-roster-header-spacer" aria-hidden="true" />
         </div>
-        {selectedRemark?.type && selectedRemark.type !== "なし" && <div className="home-remark">{selectedRemark.type}{selectedRemark.text ? `：${selectedRemark.text}` : ""}</div>}
+        {((selectedRemark?.type && selectedRemark.type !== "なし") || selectedRemark?.text) && <div className="home-remark">{selectedRemark.type && selectedRemark.type !== "なし" ? selectedRemark.type : ""}{selectedRemark.text ? `${selectedRemark.type && selectedRemark.type !== "なし" ? "：" : "備考："}${selectedRemark.text}` : ""}</div>}
         {layout.visible && <div className={`grid gap-3 ${groups.every(group => group.length > 0) ? "grid-cols-2" : "grid-cols-1"}`}>
           {groups.filter(group => group.length).map((group, index) => <div key={index} className={index > 0 ? "border-l pl-3" : ""}>{renderRoster(group)}</div>)}
         </div>}

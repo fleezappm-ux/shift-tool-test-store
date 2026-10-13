@@ -10,11 +10,12 @@ import { useUnsavedGuard } from "../lib/unsaved";
 export interface StoreMaster {
   storeName: string;
   showStoreNameOnHome: boolean;
+  showDayNotes: boolean;
   leaveRequestBoardVisibility: "immediate" | "after_approval" | "private";
 }
 
 export const DEFAULT_STORE_MASTER: StoreMaster = {
-  storeName: "", showStoreNameOnHome: false, leaveRequestBoardVisibility: "immediate"
+  storeName: "", showStoreNameOnHome: false, showDayNotes: false, leaveRequestBoardVisibility: "immediate"
 };
 
 interface Props {
@@ -25,7 +26,7 @@ interface Props {
   saving: boolean;
   onPeriodDraftChange: (settings: CalendarPeriodSettings) => void;
   onSavePeriod: () => Promise<boolean>;
-  onSaveStore: (settings: { storeName: string; showStoreNameOnHome: boolean }) => Promise<void>;
+  onSaveStore: (settings: { storeName: string; showStoreNameOnHome: boolean; showDayNotes: boolean }) => Promise<void>;
   onOpenBandSettings: () => void;
 }
 
@@ -36,9 +37,9 @@ const field = "h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text
 
 export function StoreMasterSettings({ master, onMasterChange, period, periodDraft, saving, onPeriodDraftChange, onSavePeriod, onSaveStore, onOpenBandSettings }: Props) {
   const [draft, setDraft] = useState(master);
-  useEffect(() => setDraft(master), [master.storeName, master.showStoreNameOnHome]);
+  useEffect(() => setDraft(master), [master.storeName, master.showStoreNameOnHome, master.showDayNotes]);
   const shownName = (value: string) => value === "店舗名を設定" || value === "薬局名を設定" ? "" : value;
-  const dirty = shownName(draft.storeName).trim() !== shownName(master.storeName).trim() || draft.showStoreNameOnHome !== master.showStoreNameOnHome || period.startDay !== periodDraft.startDay || period.endDay !== periodDraft.endDay;
+  const dirty = shownName(draft.storeName).trim() !== shownName(master.storeName).trim() || draft.showStoreNameOnHome !== master.showStoreNameOnHome || draft.showDayNotes !== master.showDayNotes || period.startDay !== periodDraft.startDay || period.endDay !== periodDraft.endDay;
   useUnsavedGuard("store-master", dirty);
   const [busy, setBusy] = useState(false);
   const save = async () => {
@@ -47,7 +48,7 @@ export function StoreMasterSettings({ master, onMasterChange, period, periodDraf
   };
   const doSave = async () => {
     try {
-      await onSaveStore({ storeName: draft.storeName.trim(), showStoreNameOnHome: draft.showStoreNameOnHome });
+      await onSaveStore({ storeName: draft.storeName.trim(), showStoreNameOnHome: draft.showStoreNameOnHome, showDayNotes: draft.showDayNotes });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "店舗名を保存できませんでした");
       return;
@@ -69,6 +70,10 @@ export function StoreMasterSettings({ master, onMasterChange, period, periodDraf
         <div className={`rounded-xl border-2 p-3 ${!draft.showStoreNameOnHome ? "border-blue-500 bg-blue-50" : "border-slate-200 bg-slate-50 opacity-60"}`}><div className="mb-1 font-bold text-slate-500">チェックなし</div><div className="text-base font-black text-slate-900">シフト</div></div>
       </div>
       <p className={description}>店舗名が空欄の場合は、チェックがあっても「シフト」と表示されます。</p>
+    </div>
+    <div className={panel}>
+      <label className="flex items-center gap-3 text-sm font-bold text-slate-900"><input type="checkbox" className="h-5 w-5" checked={draft.showDayNotes} onChange={event => setDraft(current => ({ ...current, showDayNotes: event.target.checked }))} />日ごとの備考欄を使う</label>
+      <p className={description}>チェックを入れると、管理者がシフト表の日付を押して「連絡事項」を書けるようになります。書いた内容は、全員のシフト表（日付の下）・画像出力・Excel/印刷の「備考」の列に出ます。祝日・定休日などの帯の名前も、画像とExcelでは同じ「備考」の列にまとまります。チェックを外すと、備考欄は表示も出力もされなくなります（書いた内容は消えません）。</p>
     </div>
     <div className={panel}>
       <h4 className={heading}>シフト表の月の区切り</h4><p className={description}>シフト表を「毎月何日から何日まで」で1か月分とするか選びます。給料の締め日に合わせるお店が多いです。例：毎月1日 → 月末まで／毎月21日 → 翌月20日まで。終了日は自動で決まり、画面・CSV・Excelも同じ期間になります。</p>

@@ -3,7 +3,7 @@ import { templateStorage } from "./lib/template-storage";
 import { TemplateResetSettings, RESET_PENDING_KEY } from "./components/TemplateResetSettings";
 import { ErrorLogPanel } from "./components/ErrorLogPanel";
 import { ShiftToolGuide, type EmployeeGuideSection } from "./components/ShiftToolGuide";
-import { useState, useEffect, useRef } from "react";
+import { Fragment, useState, useEffect, useRef } from "react";
 import { syncResetEpoch } from "./lib/reset-epoch";
 import { hasUnsaved, clearUnsaved, UNSAVED_MESSAGE } from "./lib/unsaved";
 import { format, addMonths } from "date-fns";
@@ -81,7 +81,7 @@ import { BusinessHoursSettings } from "./components/BusinessHoursSettings";
 import { buildAutoAssign, readProfiles } from "./lib/auto-assign";
 import { buildDisplayRemarks, colorForRemark, DEFAULT_SPECIAL_DAY_RULES, withDefaultSpecialDayRules, shouldRestOnDate } from "./lib/special-day-utils";
 import { CalendarPeriodSettings, fetchCalendarPeriodSettings, saveCalendarPeriodSettings } from "./lib/calendar-period-sync";
-import { BoardVisibility, fetchStoreSettings, saveStoreSettings, fetchBoardVisibility, saveBoardVisibility, fetchCorrectionVisibility, saveCorrectionVisibility } from "./lib/store-board-sync";
+import { BoardVisibility, DayNotes, fetchDayNotes, saveDayNote, fetchStoreSettings, saveStoreSettings, fetchBoardVisibility, saveBoardVisibility, fetchCorrectionVisibility, saveCorrectionVisibility } from "./lib/store-board-sync";
 import { getManagementApiKey, getShiftSession, logoutShiftSession, saveManagementApiKey, checkManagementApiKey, ShiftSession } from "./lib/auth-sync";
 import { DEFAULT_STORE_MASTER, StoreMaster, StoreMasterSettings } from "./components/StoreMasterSettings";
 import { ShiftLogin } from "./components/ShiftLogin";
@@ -346,6 +346,9 @@ export default function App() {
   const [dashboardListView, setDashboardListView] = useState(false);
   const [showLeaveManager, setShowLeaveManager] = useState(false);
   const [dayLabelDialog, setDayLabelDialog] = useState<string | null>(null);
+  const [dayNotes, setDayNotes] = useState<DayNotes>({});
+  const [dayNoteInput, setDayNoteInput] = useState("");
+  const [dayNoteSaving, setDayNoteSaving] = useState(false);
   const [dayLabelInput, setDayLabelInput] = useState("");
   const [dayLabelColor, setDayLabelColor] = useState<SpecialDayColor>("amber");
   const [correctionPopup, setCorrectionPopup] = useState<{ request: LeaveRequest; shiftText: string } | null>(null);
@@ -431,7 +434,7 @@ export default function App() {
       .then(settings => {
         if (cancelled) return;
         setStoreMaster(current => {
-          const next = { ...current, storeName: settings.storeName, showStoreNameOnHome: settings.showStoreNameOnHome };
+          const next = { ...current, storeName: settings.storeName, showStoreNameOnHome: settings.showStoreNameOnHome, showDayNotes: settings.showDayNotes };
           templateStorage.setItem("store_master_settings", JSON.stringify(next));
           return next;
         });
@@ -439,6 +442,16 @@ export default function App() {
       .catch(error => console.error("店舗名の取得に失敗しました", error));
     return () => { cancelled = true; };
   }, [appSession?.token]);
+
+  useEffect(() => {
+    if (!appSession?.token || !storeMaster.showDayNotes) return;
+    let cancelled = false;
+    const load = () => { fetchDayNotes().then(value => { if (!cancelled) setDayNotes(value); }).catch(error => console.error("備考の取得に失敗しました", error)); };
+    load();
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { cancelled = true; document.removeEventListener("visibilitychange", onVisible); };
+  }, [appSession?.token, storeMaster.showDayNotes]);
 
   useEffect(() => {
     if (!appSession?.token) return;
@@ -954,7 +967,16 @@ export default function App() {
     : (cachedLoginEmployees.length ? cachedLoginEmployees.map((item, index) => ({ id: item.id, name: item.name, displayName: item.displayName || item.name, displayOrder: index + 1, active: item.active !== false, aliases: item.aliases || [], role: item.role || "事務員" }))
       : []);
   const displayDates = [...dateRange, ...homeWeekDates.filter(homeDate => !dateRange.some(date => getDateStr(date) === getDateStr(homeDate)))];
-  const displayRemarks = buildDisplayRemarks([], specialDayRules, displayDates);
+  const dayNotesOn = storeMaster.showDayNotes === true;
+  const activeDayNotes: DayNotes = dayNotesOn ? dayNotes : {};
+  const remarkForDate = (date: Date): GlobalRemark | undefined => {
+    const key = getDateStr(date);
+    const base = buildDisplayRemarks([], specialDayRules, [date])[0];
+    const note = activeDayNotes[key];
+    if (!note) return base;
+    return base ? { ...base, text: [base.text, note].filter(Boolean).join(" ") } : { date: key, type: "", text: note, source: "manual" };
+  };
+  const displayRemarks = displayDates.map(remarkForDate).filter((item): item is GlobalRemark => !!item);
   const bandLegendItems = specialDayRules
     .filter(rule => rule.id.startsWith("band-v3:") && rule.enabled)
     .sort((first, second) => (first.order ?? 999) - (second.order ?? 999))
@@ -1106,6 +1128,15 @@ export default function App() {
     if (target?.ruleId) next = next.map(rule => rule.id === target.ruleId ? { ...rule, dates: [...rule.dates, dateStr].sort() } : rule);
     else if (target?.newName?.trim()) next = [...next, { id: `band-v3:${crypto.randomUUID()}`, name: target.newName.trim(), color: target.color || "amber", behavior: "information", enabled: true, mode: "annual", weekday: 0, weeks: [], dates: [dateStr], showName: true, restMode: "none", restEmployeeIds: [] } as SpecialDayRule];
     try { await handleSaveSpecialDayRules(next); setDayLabelDialog(null); } catch { /* 失敗の通知は保存処理が出します */ }
+  };
+  const saveDayNoteFor = async (dateStr: string, text: string) => {
+    setDayNoteSaving(true);
+    try {
+      setDayNotes(await saveDayNote(dateStr, text.trim()));
+      toast.success(text.trim() ? "備考を保存しました" : "備考を消しました");
+      setDayLabelDialog(null);
+    } catch (error) { toast.error(error instanceof Error ? error.message : "備考を保存できませんでした"); }
+    finally { setDayNoteSaving(false); }
   };
 
   const [rolesUnsaved, setRolesUnsaved] = useState(false);
@@ -1703,6 +1734,7 @@ export default function App() {
         title: `${storeMaster.storeName || "シフト"}　${format(outputDateRange[0], "M月分")}　${kind}`,
         subtitle: `${format(outputDateRange[0], "yyyy年M/d")}（${format(outputDateRange[0], "E", { locale: ja })}）〜${format(outputDateRange[outputDateRange.length - 1], "M/d")}（${format(outputDateRange[outputDateRange.length - 1], "E", { locale: ja })}）　出力日 ${format(new Date(), "M/d")}`,
         employees: list.map(item => item.displayName || item.name),
+        noteColumn: dayNotesOn,
         rows: outputDateRange.map(date => {
           const gr = bandRemarks.find(item => item.date === getDateStr(date));
           return {
@@ -1710,6 +1742,7 @@ export default function App() {
             weekday: format(date, "E", { locale: ja }),
             holiday: date.getDay() === 0 || holidays.has(getDateStr(date)),
             remark: gr?.type || "",
+            note: dayNotesOn ? activeDayNotes[getDateStr(date)] || "" : "",
             color: gr?.color,
             cells: list.map(item => { const s = getShift(item, date); return s?.shift ? leavePrefix(s) + (s.shift === "任意入力" ? (s.customShiftText || "") : s.shift) : ""; }),
           };
@@ -2007,10 +2040,7 @@ export default function App() {
     }
   };
 
-  const getGlobalRemark = (date: Date) => {
-    const dateStr = getDateStr(date);
-    return displayRemarks.find(r => r.date === dateStr);
-  };
+  const getGlobalRemark = (date: Date) => remarkForDate(date);
 
   const getRowBgClass = (date: Date) => {
     const color = colorForRemark(getGlobalRemark(date), specialDayRules);
@@ -2419,13 +2449,24 @@ export default function App() {
                       const current = presets.find(rule => rule.dates.includes(dlgDate));
                       const warn = staffingWarnings?.byDate[dlgDate];
                       return <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/40 p-3 sm:items-center" onClick={() => setDayLabelDialog(null)}><div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl" onClick={event => event.stopPropagation()}>
-                        <h3 className="text-lg font-black">{format(new Date(`${dlgDate}T00:00:00`), "M月d日（E）", { locale: ja })}の備考・帯</h3>
-                        <p className="mt-1 text-xs text-slate-600">選ぶと、この日に帯色と文字が付きます（Excelの備考にも出ます）。</p>
+                        <h3 className="text-lg font-black">{format(new Date(`${dlgDate}T00:00:00`), "M月d日（E）", { locale: ja })}の{dayNotesOn ? "備考" : "備考・帯"}</h3>
+                        {dayNotesOn && <div className="mt-3 rounded-xl border-2 border-blue-700 p-3">
+                          <label className="text-xs font-bold text-slate-700">この日の連絡事項（全員のシフト表・画像・Excelの「備考」に出ます）
+                            <textarea className="mt-1 min-h-[76px] w-full rounded-lg border px-3 py-2 text-base leading-6" maxLength={60} value={dayNoteInput} onChange={event => setDayNoteInput(event.target.value)} placeholder="例：棚卸のため、全員18時まで残ってください" />
+                          </label>
+                          <div className="mt-1 text-right text-xs text-slate-500">あと {Math.max(0, 60 - dayNoteInput.length)} 文字</div>
+                          <div className="mt-2 flex flex-wrap gap-2">{["棚卸", "会議", "研修", "配達あり", "来客あり", "早退予定"].map(word => <button key={word} type="button" className="h-10 rounded-full border border-slate-400 bg-white px-3 text-sm font-bold" onClick={() => setDayNoteInput(value => (value ? `${value} ${word}` : word).slice(0, 60))}>{word}</button>)}</div>
+                          <div className="mt-3 grid grid-cols-3 gap-2"><Button variant="outline" className="h-12" disabled={dayNoteSaving || !(activeDayNotes[dlgDate] || dayNoteInput)} onClick={() => void saveDayNoteFor(dlgDate, "")}>消す</Button><Button className="col-span-2 h-12 font-bold" disabled={dayNoteSaving || dayNoteInput.trim() === (activeDayNotes[dlgDate] || "").trim()} onClick={() => void saveDayNoteFor(dlgDate, dayNoteInput)}>{dayNoteSaving ? "保存中…" : "保存する"}</Button></div>
+                        </div>}
+                        {!isLocked && <>
+                        <p className="mt-3 text-xs text-slate-600">{dayNotesOn ? "帯（色と名前）を付けるときは、下から選びます。" : "選ぶと、この日に帯色と文字が付きます（Excelの備考にも出ます）。"}</p>
                         {warn && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-800">⚠ {warn.join("／")}</p>}
                         <div className="mt-3 grid gap-2">{presets.map(rule => <button key={rule.id} type="button" className={`rounded-xl border-2 px-3 py-3 text-left text-sm font-black ${current?.id === rule.id ? "border-blue-600 bg-blue-50" : "border-slate-200 bg-white"}`} onClick={() => void setDayLabel(dlgDate, { ruleId: rule.id })}>{current?.id === rule.id ? "✓ " : ""}{rule.name}</button>)}{presets.length === 0 && <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">よく使う備考は、設定の「お休みの日」で「この日だけ」のカードを作ると、ここに並びます。</p>}</div>
                         <div className="mt-3 rounded-xl border p-3"><label className="text-xs font-bold">その場で新しく作る（例：当番薬局 谷川整形）<input className="mt-1 h-11 w-full rounded-lg border px-3 text-sm" value={dayLabelInput} onChange={event => setDayLabelInput(event.target.value)} placeholder="文字を入力" /></label><select className="mt-2 h-10 w-full rounded-lg border bg-white px-2 text-sm" value={dayLabelColor} onChange={event => setDayLabelColor(event.target.value as SpecialDayColor)}>{([["amber", "黄"], ["blue", "青"], ["green", "緑"], ["purple", "紫"], ["red", "赤"], ["gray", "灰"]] as const).map(([value, label]) => <option key={value} value={value}>色：{label}</option>)}</select><Button className="mt-2 h-11 w-full font-bold" disabled={!dayLabelInput.trim() || specialDayLoading} onClick={() => void setDayLabel(dlgDate, { newName: dayLabelInput, color: dayLabelColor })}>この文字で追加</Button></div>
                         <div className="mt-3 grid grid-cols-2 gap-2"><Button variant="outline" className="h-11" onClick={() => setDayLabelDialog(null)}>閉じる</Button><Button variant="outline" className="h-11 text-red-700" disabled={!current || specialDayLoading} onClick={() => void setDayLabel(dlgDate, null)}>この日の指定を外す</Button></div>
                         <p className="mt-2 text-[11px] text-slate-500">すでに入力したシフトは変わりません。自動作成で休みにするかは、設定のカードで決めます。</p>
+                        </>}
+                        {isLocked && <Button variant="outline" className="mt-3 h-11 w-full" onClick={() => setDayLabelDialog(null)}>閉じる</Button>}
                       </div></div>;
                     })()}
                     {correctionPopup && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4" onClick={() => setCorrectionPopup(null)}><div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl" onClick={event => event.stopPropagation()}><h3 className="text-lg font-black text-red-700">訂正依頼</h3><p className="mt-2 text-sm font-bold">{correctionPopup.request.employeeName}　{correctionPopup.request.date ? format(new Date(`${correctionPopup.request.date}T00:00:00`), "M/d（E）", { locale: ja }) : ""}</p><div className="mt-3 rounded-xl bg-slate-100 p-3 text-sm"><span className="text-xs font-bold text-slate-500">現在の勤務</span><p className="font-black">{correctionPopup.shiftText}</p></div><div className="mt-2 rounded-xl bg-red-50 p-3 text-sm"><span className="text-xs font-bold text-red-700">依頼内容</span><p className="whitespace-pre-wrap font-bold">{correctionPopup.request.comment || "（コメントなし）"}</p></div><p className="mt-3 text-xs text-slate-600">返事が必要なら「管理者からのお知らせ」で本人を指定して送れます。</p><div className="mt-4 grid grid-cols-2 gap-2"><Button variant="outline" onClick={() => setCorrectionPopup(null)}>閉じる</Button>{appSession.role === "admin" && <Button className="bg-red-600 hover:bg-red-700" onClick={async () => { const target = correctionPopup.request; try { const saved = await updateLeaveRequestStatus(target.id, "対応済み"); setLeaveRequests(prev => prev.map(r => r.id === saved.id ? saved : r)); setHomePendingCorrections(prev => prev.filter(r => r.id !== saved.id)); setCorrectionPopup(null); toast.success("確認しました"); } catch (error) { toast.error(error instanceof Error ? error.message : "更新できませんでした"); } }}>確認した</Button>}</div></div></div>}
@@ -2462,8 +2503,9 @@ export default function App() {
                             const rowBgClass = getRowBgClass(date);
 
                             return (
-                              <TableRow key={date.toISOString()} className={`h-10 ${rowBgClass}`}>
-                                <TableCell className="dashboard-date-col py-2 border-r border-border">{appSession.role === "admin" && !isLocked ? <button type="button" className="block w-full text-inherit" aria-label={`${format(date, "M月d日")}の備考・帯を設定`} onClick={() => { setDayLabelInput(""); setDayLabelDialog(dateStr); }}>{format(date, "MM/dd")}{gr?.type && <span className="block truncate text-[8px] font-bold leading-tight text-slate-600">{gr.type}</span>}{staffingWarnings?.byDate[dateStr] && <span data-staffing-date className="block text-[9px] font-bold text-amber-700">⚠</span>}</button> : <>{format(date, "MM/dd")}{gr?.type && <span className="block truncate text-[8px] font-bold leading-tight text-slate-600">{gr.type}</span>}</>}</TableCell>
+                              <Fragment key={date.toISOString()}>
+                              <TableRow className={`h-10 ${rowBgClass}`}>
+                                <TableCell className="dashboard-date-col py-2 border-r border-border">{appSession.role === "admin" && (!isLocked || dayNotesOn) ? <button type="button" className="block w-full text-inherit" aria-label={`${format(date, "M月d日")}の備考・帯を設定`} onClick={() => { setDayLabelInput(""); setDayNoteInput(activeDayNotes[dateStr] || ""); setDayLabelDialog(dateStr); }}>{format(date, "MM/dd")}{gr?.type && <span className="block truncate text-[8px] font-bold leading-tight text-slate-600">{gr.type}</span>}{staffingWarnings?.byDate[dateStr] && <span data-staffing-date className="block text-[9px] font-bold text-amber-700">⚠</span>}</button> : <>{format(date, "MM/dd")}{gr?.type && <span className="block truncate text-[8px] font-bold leading-tight text-slate-600">{gr.type}</span>}</>}</TableCell>
                                 <TableCell className="dashboard-day-col py-2 text-muted-foreground border-r border-border">{format(date, "E", { locale: ja })}</TableCell>
                                 {dashboardEmployees.map(emp => {
                                   const s = getShift(emp, date);
@@ -2497,6 +2539,8 @@ export default function App() {
                                   );
                                 })}
                               </TableRow>
+                              {dayNotesOn && activeDayNotes[dateStr] && <TableRow className="dashboard-note-row hover:bg-transparent"><TableCell colSpan={2 + dashboardEmployees.length} className="border-r border-border bg-amber-50 px-3 py-1.5 text-left text-xs font-bold leading-5 text-amber-900">備考　{activeDayNotes[dateStr]}</TableCell></TableRow>}
+                              </Fragment>
                             );
                           })}
                           {/* Summary Row */}

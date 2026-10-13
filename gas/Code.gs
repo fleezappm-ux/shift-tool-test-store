@@ -40,7 +40,7 @@ function dispatchShiftAction_(data) {
     // 公開ログイン操作以外は、ルーティング時に必ずセッションを検証する。
     // 各関数内の本人・接続キー・管理者チェックも引き続き適用する。
     var publicActions = ["loginShift", "getShiftLoginEmployees", "getShiftResetEpoch"];
-    var adminActions = ["previewTemplateReset", "getTemplateResetStatus", "runTemplateReset", "clearTemplateShiftRemarks", "saveShiftEmployeeMaster", "resetShiftEmployeePin", "saveShiftRoleMaster", "saveShiftHomeLayout", "saveShiftAdminNotice", "deleteShiftAdminNotice", "saveShiftAdminNoticeVisibility", "saveShiftWorkTimeMaster", "saveShiftCycleMaster", "saveShiftAutoDraftSettings", "saveShiftStoreBoardVisibility", "saveShiftCorrectionVisibility", "updateShiftLeaveRequestStatus", "deleteShiftLeaveRequest", "saveShiftSpecialDayRules", "saveShiftStaffingRules", "saveShiftCalendarPeriodSettings", "saveShiftPeriodStatus", "saveShiftStoreSettings", "checkShiftApiKey", "saveShiftMonth", "flushShiftPending", "getShiftErrorLog", "clearShiftErrorLog"];
+    var adminActions = ["previewTemplateReset", "getTemplateResetStatus", "runTemplateReset", "clearTemplateShiftRemarks", "saveShiftEmployeeMaster", "resetShiftEmployeePin", "saveShiftRoleMaster", "saveShiftHomeLayout", "saveShiftAdminNotice", "deleteShiftAdminNotice", "saveShiftAdminNoticeVisibility", "saveShiftWorkTimeMaster", "saveShiftCycleMaster", "saveShiftAutoDraftSettings", "saveShiftStoreBoardVisibility", "saveShiftCorrectionVisibility", "updateShiftLeaveRequestStatus", "deleteShiftLeaveRequest", "saveShiftSpecialDayRules", "saveShiftStaffingRules", "saveShiftCalendarPeriodSettings", "saveShiftPeriodStatus", "saveShiftStoreSettings", "saveShiftDayNote", "checkShiftApiKey", "saveShiftMonth", "flushShiftPending", "getShiftErrorLog", "clearShiftErrorLog"];
     if (publicActions.indexOf(data.action) < 0) requireShiftSession(data.sessionToken, adminActions.indexOf(data.action) >= 0 ? "admin" : null);
     if (data.action === "previewTemplateReset") return previewTemplateReset(data);
     if (data.action === "getTemplateResetStatus") return getTemplateResetStatus(data);
@@ -52,6 +52,8 @@ function dispatchShiftAction_(data) {
     if (data.action === "checkShiftApiKey") { verifyShiftApiKey(data.shiftApiKey); return createJsonDataResponse({ success: true }); }
     if (data.action === "getShiftStoreSettings") return getShiftStoreSettings(data);
     if (data.action === "saveShiftStoreSettings") return saveShiftStoreSettings(data);
+    if (data.action === "getShiftDayNotes") return getShiftDayNotes(data);
+    if (data.action === "saveShiftDayNote") return saveShiftDayNote(data);
     if (data.action === "getShiftLoginEmployees") return getShiftLoginEmployees(data);
     if (data.action === "getShiftEmployeeMaster") return getShiftEmployeeMaster(data);
     if (data.action === "saveShiftEmployeeMaster") return saveShiftEmployeeMaster(data);
@@ -1059,13 +1061,14 @@ function deleteShiftAdminNotice(data) {
  * 店舗共通設定（店舗名・ホームへの表示）
  * ------------------------------------------------------------ */
 function readShiftStoreSettings_() {
-  var settings = { storeName: "", showStoreNameOnHome: false };
+  var settings = { storeName: "", showStoreNameOnHome: false, showDayNotes: false };
   try {
     var raw = shiftProps_().getProperty("SHIFT_STORE_SETTINGS_JSON");
     var parsed = raw ? JSON.parse(raw) : null;
     if (parsed && typeof parsed === "object") {
       settings.storeName = String(parsed.storeName || "").slice(0, 60);
       settings.showStoreNameOnHome = parsed.showStoreNameOnHome === true;
+      settings.showDayNotes = parsed.showDayNotes === true;
     }
   } catch (_) {}
   return settings;
@@ -1085,7 +1088,7 @@ function saveShiftStoreSettings(data) {
     var input = data.settings || {};
     var storeName = sanitizeText(input.storeName, 60).replace(/[\r\n\t]+/g, " ").trim();
     if (typeof input.showStoreNameOnHome !== "boolean") throw new Error("店舗名の表示設定が正しくありません。画面を読み込み直してください。");
-    var settings = { storeName: storeName, showStoreNameOnHome: input.showStoreNameOnHome };
+    var settings = { storeName: storeName, showStoreNameOnHome: input.showStoreNameOnHome, showDayNotes: input.showDayNotes === true };
     return withShiftLock_(function() {
       var before = readShiftStoreSettings_();
       safeSetProperty_("SHIFT_STORE_SETTINGS_JSON", JSON.stringify(settings));
@@ -1093,6 +1096,47 @@ function saveShiftStoreSettings(data) {
       return createJsonDataResponse({ success: true, settings: settings });
     });
   } catch (error) { return createJsonResponse(false, error.message || "店舗設定を保存できませんでした。"); }
+}
+
+/* ------------------------------------------------------------
+ * 日ごとの備考（管理者だけが入力。全員の画面・画像・Excelに出る）
+ * 「設定」シートの SHIFT_DAY_NOTES_JSON に { "yyyy-MM-dd": "文字" } で保存します。
+ * 表示のON/OFFは店舗設定の showDayNotes です。
+ * ------------------------------------------------------------ */
+var SHIFT_DAY_NOTE_MAX_ = 60;
+var SHIFT_DAY_NOTE_KEEP_DAYS_ = 800;
+
+function readShiftDayNotes_() {
+  try {
+    var raw = shiftProps_().getProperty("SHIFT_DAY_NOTES_JSON");
+    var parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) { return {}; }
+}
+
+function getShiftDayNotes(data) {
+  try {
+    return createJsonDataResponse({ success: true, notes: readShiftDayNotes_() });
+  } catch (error) { return createJsonResponse(false, error.message || "備考を取得できませんでした。"); }
+}
+
+function saveShiftDayNote(data) {
+  try {
+    verifyShiftApiKey(data.shiftApiKey);
+    var date = String(data.date || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("日付が正しくありません。");
+    var text = sanitizeText(data.text, SHIFT_DAY_NOTE_MAX_).replace(/[\r\n\t]+/g, " ").trim();
+    return withShiftLock_(function() {
+      var notes = readShiftDayNotes_();
+      var before = notes[date] || "";
+      if (text) notes[date] = text; else delete notes[date];
+      var limit = new Date(new Date().getTime() + 9 * 3600000 - SHIFT_DAY_NOTE_KEEP_DAYS_ * 86400000).toISOString().slice(0, 10);
+      Object.keys(notes).forEach(function(key) { if (key < limit) delete notes[key]; });
+      safeSetProperty_("SHIFT_DAY_NOTES_JSON", JSON.stringify(notes));
+      appendShiftAudit(data, "日ごとの備考", date, before, text);
+      return createJsonDataResponse({ success: true, notes: notes });
+    });
+  } catch (error) { return createJsonResponse(false, error.message || "備考を保存できませんでした。"); }
 }
 
 /** 従業員マスタの「版」。他の端末が先に保存していたら、古い画面からの上書きを止めるために使います。 */
