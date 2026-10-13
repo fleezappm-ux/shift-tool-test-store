@@ -268,6 +268,8 @@ function applyShiftRowsToSheet_(incomingRows, periodStart, periodEnd, updatedBy)
   var now = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd HH:mm:ss");
   var created = 0, updated = 0, cleared = 0, unchanged = 0;
   var seen = {};
+  var changeLog = [];    // 変更履歴（誰が・どのマスを・何から何へ）。監査ログに残します
+  var logChange = function(date, name, before, after) { if (changeLog.length < 60) changeLog.push({ d: date, n: name, b: before, a: after }); };
   var updates = [];      // { sheetRow, values }
   var appends = [];      // values
   var deleteRows = {};   // sheetRow -> true
@@ -288,17 +290,17 @@ function applyShiftRowsToSheet_(incomingRows, periodStart, periodEnd, updatedBy)
     var hasContent = Boolean(shiftContent || note || gType || gText);
     var matches = byKey[key] || (employeeId ? byKey[employeeName + "|" + dateValue] : null) || [];
     if (!hasContent) {
-      matches.forEach(function(m) { if (!deleteRows[m.sheetRow]) { deleteRows[m.sheetRow] = true; cleared++; } });
+      matches.forEach(function(m) { if (!deleteRows[m.sheetRow]) { deleteRows[m.sheetRow] = true; cleared++; logChange(dateValue, employeeName, m.flat["シフト内容"] || "", ""); } });
       if (!matches.length) unchanged++;
       return;
     }
     var by = rawRow._u ? sanitizeText(rawRow._u, 100) : updatedBy;
     var values = [dateValue, employeeName, employeeId, shiftContent, breakTime, workTime, note, gType, gText, by, now];
-    if (!matches.length) { appends.push(values); created++; return; }
+    if (!matches.length) { appends.push(values); created++; logChange(dateValue, employeeName, "", shiftContent); return; }
     var cur = matches[0].flat;
     var changed = cur["社員名"] !== employeeName || cur["シフト内容"] !== shiftContent || cur["休憩時間"] !== breakTime || cur["実働時間"] !== workTime ||
       cur["備考"] !== note || cur["全体補足種別"] !== gType || cur["全体補足内容"] !== gText;
-    if (changed) { updates.push({ sheetRow: matches[0].sheetRow, values: values }); updated++; } else { unchanged++; }
+    if (changed) { updates.push({ sheetRow: matches[0].sheetRow, values: values }); updated++; logChange(dateValue, employeeName, cur["シフト内容"] || "", shiftContent); } else { unchanged++; }
     for (var i = 1; i < matches.length; i++) { if (!deleteRows[matches[i].sheetRow]) { deleteRows[matches[i].sheetRow] = true; cleared++; } }
   });
   var width = SHIFT_SHEET_HEADERS_.length;
@@ -323,7 +325,7 @@ function applyShiftRowsToSheet_(incomingRows, periodStart, periodEnd, updatedBy)
     if (appends.length) sheet.getRange(sheet.getLastRow() + 1, 1, appends.length, width).setValues(appends);
   }
   SpreadsheetApp.flush();
-  return { created: created, updated: updated, cleared: cleared, unchanged: unchanged };
+  return { created: created, updated: updated, cleared: cleared, unchanged: unchanged, changes: changeLog };
 }
 
 /* ============================================================

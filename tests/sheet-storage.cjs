@@ -26,6 +26,7 @@ book.stats.writes=0;
 r=ctx.saveShiftMonth({...base,shifts:[row('2026-10-05','早番')]});assert.equal(r.unchanged,1);assert.equal(r.updated,0);assert.equal(book.stats.writes,0,'変更なしでは書き込まない');
 r=ctx.saveShiftMonth({...base,partial:true,shifts:[row('2026-10-05','休み')]});assert.equal(r.updated,1);assert.equal(sheet().data.length,4);
 assert.equal(ctx.getShifts({}).shifts.find(s=>s['社員名']==='藤川'&&s['日付'].start==='2026-10-05')['シフト内容'],'休み');
+{const pe=ctx.applyShiftRowsToSheet_([row('2026-10-05','早番')],'2026-10-01','2026-10-31','管理者');assert.deepEqual(JSON.parse(JSON.stringify(pe.changes)),[{d:'2026-10-05',n:'藤川',b:'休み',a:'早番'}],'変更履歴: 何から何へ');ctx.applyShiftRowsToSheet_([row('2026-10-05','休み')],'2026-10-01','2026-10-31','管理者');}
 // 4. 全項目が空の行は、既存行を削除する（他の行はずれない）
 r=ctx.saveShiftMonth({...base,partial:true,shifts:[row('2026-10-06','')]});assert.equal(r.cleared,1);
 g=ctx.getShifts({});assert.equal(g.shifts.length,2);assert.ok(!g.shifts.some(s=>s['日付'].start==='2026-10-06'));

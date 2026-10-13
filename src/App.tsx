@@ -1196,6 +1196,40 @@ export default function App() {
   useEffect(() => subscribePending(setPendingStatus), []);
   useEffect(() => { if (appSession?.role === "admin" && appSession.token) void checkPendingOnServer(); }, [appSession?.role, appSession?.token]);
 
+  // 他の端末で変更されたシフトを、画面を開いたとき・1分半ごとに読み直す（入力中・保存待ちのときは読み直さない）。
+  // 読み直さないと、スマホに古いシフトが残り、「入れたのに反映されない」ように見えてしまいます。
+  const liveRef = useRef({ employees, employeeMaster, syncState, busy: false });
+  liveRef.current = { employees, employeeMaster, syncState, busy: !!overviewCell || autoDraftRun.state === "running" || dayLabelDialog !== null };
+  const refreshingShiftsRef = useRef(false);
+  useEffect(() => {
+    if (!appSession?.token || !initialSyncComplete) return;
+    let cancelled = false;
+    const refresh = async () => {
+      if (cancelled || document.visibilityState !== "visible" || refreshingShiftsRef.current || !syncReadyRef.current) return;
+      const live = liveRef.current;
+      if (live.busy || live.syncState !== "saved" || editRevisionRef.current > savedRevisionRef.current) return;
+      refreshingShiftsRef.current = true;
+      try {
+        const revision = editRevisionRef.current;
+        const merged = await fetchShiftsFromServer(live.employees, false);
+        if (!merged || cancelled) return;
+        // 読み込み中に入力が始まっていたら、入力を優先して捨てる
+        if (editRevisionRef.current !== revision || editRevisionRef.current > savedRevisionRef.current || liveRef.current.busy || liveRef.current.syncState !== "saved") return;
+        const next = mergeEmployeesWithMaster(merged.employees, liveRef.current.employeeMaster);
+        const signature = (list: Employee[]) => JSON.stringify(list.map(item => [item.id, [...item.shifts].filter(shift => shift.shift).map(shift => [shift.date.slice(0, 10), shift.shift, shift.customShiftText || "", shift.leave || "", shift.breakTime || "", shift.workTime || ""]).sort()]));
+        if (signature(next) === signature(liveRef.current.employees)) return;
+        seedSavedBaseline(merged.employees);
+        skipDirtyRef.current = true;
+        setEmployees(next);
+      } catch (error) { console.error("最新のシフトの読み直しに失敗しました", error); }
+      finally { refreshingShiftsRef.current = false; }
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") void refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    const timer = window.setInterval(() => { void refresh(); }, 90000);
+    return () => { cancelled = true; document.removeEventListener("visibilitychange", onVisible); window.clearInterval(timer); };
+  }, [appSession?.token, initialSyncComplete]);
+
   // Serialize saves so an older request cannot overwrite a newer edit.
   const saveCurrentMonth = (): Promise<void> => {
     if (!dateRange.length) return Promise.resolve();
