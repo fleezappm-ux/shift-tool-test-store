@@ -1,4 +1,4 @@
-import { checkAoi, DEFAULT_AOI_FILTERS } from ../src/lib/aoi-checks;
+import { checkAoi, DEFAULT_AOI_FILTERS } from "../src/lib/aoi-checks";
 const d=(s:string)=>new Date(s+"T00:00:00");
 const dates=["2026-11-02","2026-11-03","2026-11-04","2026-11-05","2026-11-06","2026-11-07","2026-11-08"].map(d);
 const mk=(id:string,name:string,work:string[],extra:Record<string,string>={})=>({id,name,displayName:name,shifts:dates.map(x=>{const k=x.toISOString().slice(0,10).replace(/T.*/,"");const key=`${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}-${String(x.getDate()).padStart(2,"0")}`;return {date:key,shift:extra[key]||(work.includes(key)?"9:00":"休み")}})}) as any;
