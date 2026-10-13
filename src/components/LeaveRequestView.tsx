@@ -2,7 +2,7 @@ import { templateStorage } from "../lib/template-storage";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { format } from "date-fns";
 import { ja } from "date-fns/locale/ja";
-import { Send, Trash2 } from "lucide-react";
+import { FileText, Send, Trash2 } from "lucide-react";
 import { CommentVisibility, Employee, GlobalRemark, LeaveRequest, LeaveRequestType } from "../types";
 import { Button } from "@/components/ui/button";
 
@@ -65,6 +65,9 @@ export function LeaveRequestView({ employees, dates, requests, remarks, locked, 
   const [openDate, setOpenDate] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [freeText, setFreeText] = useState("");
+  const [freeSending, setFreeSending] = useState(false);
+  const [freeError, setFreeError] = useState("");
   const [showHelp, setShowHelp] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches && templateStorage.getItem(HELP_STORAGE_KEY) !== "yes");
   const [dismissHelp, setDismissHelp] = useState(false);
   const noteRef = useRef<HTMLElement | null>(null);
@@ -128,6 +131,20 @@ export function LeaveRequestView({ employees, dates, requests, remarks, locked, 
     } finally { setSubmitting(false); }
   };
 
+  const submitFreeText = async () => {
+    const text = freeText.trim();
+    if (!operator || !text || freeSending) return;
+    if (!window.confirm(`次の内容を文章で提出します。よろしいですか？\n\n${text}`)) return;
+    setFreeSending(true);
+    setFreeError("");
+    try {
+      await onSubmit({ employeeId: operatorId, employeeName, date: "", periodStart, periodEnd, type: "文章提出", comment: text, commentVisibility: "editors" });
+      setFreeText("");
+    } catch (cause) {
+      setFreeError(cause instanceof Error ? cause.message : "提出に失敗しました。もう一度お試しください。");
+    } finally { setFreeSending(false); }
+  };
+
   const selectFor = (date: string) => <select
     value={drafts[date]?.type || ""}
     disabled={submitting}
@@ -182,6 +199,15 @@ export function LeaveRequestView({ employees, dates, requests, remarks, locked, 
       <span className="leave-mobile-instruction">本人の欄を押して希望を選択</span><span className="leave-desktop-instruction">本人の欄をクリックして希望を選択</span>
     </div>
 
+    {employeeName && <details className="leave-free-card rounded-2xl border-2 border-amber-400 bg-amber-50 p-3">
+      <summary className="flex cursor-pointer items-center gap-2 font-black text-amber-900"><FileText className="h-5 w-5" />操作が分からない方は、文章で提出できます（ここを押す）</summary>
+      <p className="mt-2 text-sm text-slate-700">「{periodLabel}」の希望を、ふつうの文章で書いて送れます。例：「10/20は休みたいです。11/3は午前だけ出られます。」</p>
+      <textarea className="mt-2 w-full rounded-lg border-2 border-amber-300 bg-white p-3 text-base" rows={5} maxLength={1000} value={freeText} disabled={freeSending} onChange={event => { setFreeText(event.target.value); setFreeError(""); }} placeholder="希望を文章で書いてください（日付も一緒に書いてください）" aria-label="文章で提出する希望" />
+      <div className="flex items-center justify-between text-xs text-slate-500"><span>管理者だけに届きます</span><span>{freeText.length}/1000</span></div>
+      {freeError && <p role="alert" className="leave-submit-error">{freeError}</p>}
+      <Button className="mt-2 h-12 w-full font-bold" disabled={!freeText.trim() || freeSending || loading} onClick={() => void submitFreeText()}><Send className="mr-2 h-4 w-4" />{freeSending ? "提出中…" : "この文章を提出"}</Button>
+    </details>}
+
     {locked && <p className="leave-locked-message">確定済みの期間です。希望を変更する場合は「訂正依頼」を選び、コメントに内容を書いてください。</p>}
     {employeeName ? <>
       {view === "overall" ? <div className="leave-shift-table-scroll">
@@ -228,7 +254,7 @@ export function LeaveRequestView({ employees, dates, requests, remarks, locked, 
       <section className="leave-request-card">
         <h2>この期間に提出済みの希望</h2>
         {mine.length === 0 ? <p className="leave-empty">まだ提出されていません</p> : <div className="leave-submitted-list">
-          {mine.map(item => <div key={item.id}><div><strong>{item.type}</strong><span>{item.date ? format(new Date(`${item.date}T00:00:00`), "M月d日（E）", { locale: ja }) : "この期間"}</span>{item.comment && <small>{item.comment}</small>}</div><span className={`leave-status status-${item.status}`}>{item.status}</span>{item.status === "申請中" && <button aria-label="希望を取り消す" onClick={() => { if (window.confirm(`${item.date || "この期間"}の${item.type}を取り下げますか？`)) void onCancel(item.id); }}><Trash2 className="w-4 h-4" /></button>}</div>)}
+          {mine.map(item => <div key={item.id}><div><strong>{item.type === "文章提出" ? "文章で提出" : item.type}</strong><span>{item.date ? format(new Date(`${item.date}T00:00:00`), "M月d日（E）", { locale: ja }) : "この期間"}</span>{item.comment && <small>{item.comment}</small>}</div><span className={`leave-status status-${item.status}`}>{item.status}</span>{item.status === "申請中" && <button aria-label="希望を取り消す" onClick={() => { if (window.confirm(`${item.date || "この期間"}の${item.type}を取り下げますか？`)) void onCancel(item.id); }}><Trash2 className="w-4 h-4" /></button>}</div>)}
         </div>}
       </section>
     </> : <p className="leave-request-card">操作員の情報を取得できません。ログインし直してください。</p>}
@@ -247,6 +273,7 @@ export function LeaveRequestView({ employees, dates, requests, remarks, locked, 
           <li>選んだ内容は、画面を下に進むと「提出ノート」に表示されます。</li>
           <li>提出ノートの内容を確認し、「このノートを提出」を押してください。</li>
         </ol>
+        <p>操作が難しいときは、画面上の黄色い「文章で提出できます」から、文章で希望を送れます。</p>
         <p>確定済みの日は「訂正依頼」を選び、コメントに変更内容を入力してください。</p>
         <label className="flex min-h-10 items-center gap-2"><input type="checkbox" checked={dismissHelp} onChange={event => setDismissHelp(event.target.checked)} />次回から表示しない</label>
         <Button className="w-full" onClick={() => { if (dismissHelp) templateStorage.setItem(HELP_STORAGE_KEY, "yes"); setShowHelp(false); }}>使い始める</Button>

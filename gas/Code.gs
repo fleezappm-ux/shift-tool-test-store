@@ -1605,6 +1605,7 @@ function getShiftLeaveRequests(data) {
       requests = requests.filter(function(item) {
         var own = viewer.employeeId && item.employeeId === viewer.employeeId;
         if (own) return true;
+        if (item.type === "文章提出") return false;
         if (item.type === "訂正依頼") return correctionVisibility === "all";
         if (boardVisibility === "private") return false;
         if (boardVisibility === "after_approval") return item.status === "承認";
@@ -1638,9 +1639,9 @@ function saveShiftLeaveRequest(data) {
     var periodEnd = sanitizeDateValue(input.periodEnd);
     var dateValue = input.date ? sanitizeDateValue(input.date) : "";
     var type = sanitizeText(input.type, 30);
-    var comment = sanitizeText(input.comment, 300);
+    var comment = sanitizeText(input.comment, type === "文章提出" ? 1000 : 300);
     var commentVisibility = input.commentVisibility === "editors" ? "editors" : "all";
-    var allowedTypes = ["有給希望", "休み希望", "出勤希望", "午前休希望", "午後休希望", "希望なし", "訂正依頼"];
+    var allowedTypes = ["有給希望", "休み希望", "出勤希望", "午前休希望", "午後休希望", "希望なし", "訂正依頼", "文章提出"];
     if (!employeeId || !periodStart || !periodEnd || periodStart > periodEnd) throw new Error("申請内容が正しくありません。");
     if (session.employeeId && session.employeeId !== employeeId) throw new Error("別の従業員として希望を提出することはできません。");
     assertShiftLeavePeriod_(periodStart);
@@ -1650,12 +1651,13 @@ function saveShiftLeaveRequest(data) {
     employeeName = masterEntry.displayName || masterEntry.name;
     if (!employeeName) throw new Error("申請内容が正しくありません。");
     if (allowedTypes.indexOf(type) < 0) throw new Error("希望種別が正しくありません。");
-    if (type !== "希望なし" && (!dateValue || dateValue < periodStart || dateValue > periodEnd)) throw new Error("希望日が対象期間外です。");
-    if (type === "希望なし") dateValue = "";
+    if (type !== "希望なし" && type !== "文章提出" && (!dateValue || dateValue < periodStart || dateValue > periodEnd)) throw new Error("希望日が対象期間外です。");
+    if (type === "希望なし" || type === "文章提出") dateValue = "";
+    if (type === "文章提出" && !comment.trim()) throw new Error("提出する文章を入力してください。");
     if (type === "訂正依頼") {
       if (!comment.trim()) throw new Error("訂正内容をコメントに入力してください。");
       if (!readShiftPeriodStatusForCorrection(periodStart)) throw new Error("確定シフトの期間だけ訂正依頼を提出できます。");
-    } else if (type !== "希望なし" && readShiftPeriodStatusForCorrection(periodStart)) {
+    } else if (type !== "希望なし" && type !== "文章提出" && readShiftPeriodStatusForCorrection(periodStart)) {
       throw new Error("この期間は確定済みです。変更したいときは「訂正依頼」を選んでください。");
     }
     var desiredStart = "", desiredEnd = "";
@@ -1671,11 +1673,11 @@ function saveShiftLeaveRequest(data) {
     var isSameLeaveRequestOwner_ = function(item) { return item.employeeId ? item.employeeId === employeeId : item.employeeName === employeeName; };
     if (type === "希望なし") {
       requests.forEach(function(item) { if (isSameLeaveRequestOwner_(item) && item.status === "申請中") { item.status = "取消"; item.updatedAt = now; } });
-    } else {
+    } else if (type !== "文章提出") {
       requests = requests.filter(function(item) { return !(isSameLeaveRequestOwner_(item) && item.type === "希望なし" && item.status === "申請中"); });
     }
     var isNewRequest = false;
-    var existing = requests.find(function(item) { return (item.employeeId === employeeId || (!item.employeeId && item.employeeName === employeeName)) && item.date === dateValue && (item.type === "訂正依頼") === (type === "訂正依頼") && item.status !== "取消"; });
+    var existing = type === "文章提出" ? null : requests.find(function(item) { return item.type !== "文章提出" && (item.employeeId === employeeId || (!item.employeeId && item.employeeName === employeeName)) && item.date === dateValue && (item.type === "訂正依頼") === (type === "訂正依頼") && item.status !== "取消"; });
     if (existing) {
       existing.type = type;
       existing.desiredWorkStart = desiredStart;
@@ -1742,7 +1744,7 @@ function updateShiftLeaveRequestStatus(data) {
     var status = sanitizeText(data.status, 20);
     if (["申請中", "承認", "却下", "取消", "対応済み"].indexOf(status) < 0) throw new Error("状態が正しくありません。");
     var store = findShiftLeaveRequestStore(sanitizeText(data.id, 100));
-    if (status === "対応済み" && store.request.type !== "訂正依頼") throw new Error("訂正依頼だけ対応済みにできます。");
+    if (status === "対応済み" && store.request.type !== "訂正依頼" && store.request.type !== "文章提出") throw new Error("訂正依頼と文章提出だけ対応済みにできます。");
     store.request.status = status;
     store.request.rejectionReason = status === "却下" ? sanitizeText(data.rejectionReason || "", 300) : "";
     store.request.updatedAt = new Date().toISOString();

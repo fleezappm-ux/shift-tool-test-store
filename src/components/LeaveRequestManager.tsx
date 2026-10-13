@@ -16,7 +16,8 @@ export function LeaveRequestManager({ requests, loading, onStatusChange, onDelet
   const [target, setTarget] = useState<{ request: LeaveRequest; status: "申請中" | "承認" | "却下" } | null>(null);
   const [deleting, setDeleting] = useState<LeaveRequest | null>(null);
   const [reason, setReason] = useState("");
-  const pendingItems = requests.filter(item => item.status === "申請中" && item.type !== "希望なし" && item.type !== "訂正依頼");
+  const pendingItems = requests.filter(item => item.status === "申請中" && item.type !== "希望なし" && item.type !== "訂正依頼" && item.type !== "文章提出");
+  const textItems = requests.filter(item => item.status === "申請中" && item.type === "文章提出");
   const history = requests.filter(item => item.status !== "申請中" || item.type === "希望なし" || item.type === "訂正依頼");
   const pending = pendingItems.length;
   const counts = pendingItems.filter(item => item.date).reduce<Record<string, number>>((r, item) => ({ ...r, [item.date]: (r[item.date] || 0) + 1 }), {});
@@ -29,6 +30,11 @@ export function LeaveRequestManager({ requests, loading, onStatusChange, onDelet
   };
   return <section className="leave-manager">
     <div className="leave-manager-header"><div><strong>休み希望の調整</strong><span>申請中 {pending}件</span></div>{Object.values(counts).some(c => c >= 2) && <div className="leave-conflict"><AlertTriangle className="w-4 h-4" />同日希望あり</div>}</div>
+    {textItems.length > 0 && <div className="mb-3 rounded-xl border-2 border-amber-400 bg-amber-50 p-3">
+      <p className="font-black text-amber-800">📝 文章で届いた希望（{textItems.length}件）</p>
+      <p className="text-xs text-slate-600">使い方が分からない人が文章で出した希望です。内容を見てシフトに反映し、「確認した」を押してください。</p>
+      <div className="mt-2 space-y-2">{textItems.map(item => <div key={item.id} className="rounded-lg bg-white p-3 text-sm shadow-sm"><div className="flex items-center justify-between gap-2"><strong>{item.employeeName}</strong><small className="text-slate-500">{item.submittedAt ? format(new Date(item.submittedAt), "M/d HH:mm") : ""}</small></div><p className="mt-1 whitespace-pre-wrap">{item.comment}</p><div className="mt-2 flex justify-end"><button type="button" disabled={loading} className="rounded-lg bg-green-700 px-3 py-1.5 text-sm font-bold text-white" onClick={() => void onStatusChange(item, "対応済み")}>確認した</button></div></div>)}</div>
+    </div>}
     {pendingItems.length === 0 ? <p>対応待ちの希望申請はありません</p> : <div className="leave-manager-list">
       {[...pendingItems].sort((a,b)=>a.date.localeCompare(b.date)).map(item => <div key={item.id} className={`leave-manager-row status-${item.status}`}>
         <div className="leave-manager-date"><strong>{item.date ? format(new Date(`${item.date}T00:00:00`),"M/d",{locale:ja}) : "希望"}</strong><span>{item.date ? format(new Date(`${item.date}T00:00:00`),"E",{locale:ja}) : "なし"}</span></div>
